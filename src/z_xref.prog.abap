@@ -51,14 +51,14 @@ TYPES:
   tt_calls TYPE STANDARD TABLE OF ts_call WITH KEY table_line,
 
   BEGIN OF ts_data,
-    env               TYPE ts_env,
-    type              TYPE string,
-    name              TYPE string,
-    depth_where_used  TYPE i,
-    depth_calls       TYPE i,
-    include_sap_calls TYPE abap_bool,
-    units             TYPE SORTED TABLE OF ts_unit WITH UNIQUE KEY id,
-    calls             TYPE tt_calls,
+    env                 TYPE ts_env,
+    type                TYPE string,
+    name                TYPE string,
+    depth_where_used    TYPE i,
+    depth_calls         TYPE i,
+    include_sap_objects TYPE abap_bool,
+    units               TYPE SORTED TABLE OF ts_unit WITH UNIQUE KEY id,
+    calls               TYPE tt_calls,
   END OF ts_data.
 
 *--------------------------------------------------------------------*
@@ -672,15 +672,15 @@ CLASS lcl_task DEFINITION.
   PUBLIC SECTION.
     METHODS:
       run
-        IMPORTING unit              TYPE REF TO lcl_unit
-                  depth_calls       TYPE i OPTIONAL
-                  depth_where_used  TYPE i OPTIONAL
-                  include_sap_calls TYPE abap_bool OPTIONAL
-        RETURNING VALUE(result)     TYPE ts_data.
+        IMPORTING unit                TYPE REF TO lcl_unit
+                  depth_calls         TYPE i OPTIONAL
+                  depth_where_used    TYPE i OPTIONAL
+                  include_sap_objects TYPE abap_bool OPTIONAL
+        RETURNING VALUE(result)       TYPE ts_data.
 
   PRIVATE SECTION.
     DATA:
-      include_sap_calls TYPE abap_bool.
+      include_sap_objects TYPE abap_bool.
 
     METHODS:
       get_calls
@@ -700,13 +700,13 @@ CLASS lcl_task IMPLEMENTATION.
 
   METHOD run.
 
-    me->include_sap_calls = include_sap_calls.
+    me->include_sap_objects = include_sap_objects.
 
-    result = VALUE #( type              = unit->type
-                      name              = unit->get_name( )
-                      depth_where_used  = depth_where_used
-                      depth_calls       = depth_calls
-                      include_sap_calls = include_sap_calls ).
+    result = VALUE #( type                = unit->type
+                      name                = unit->get_name( )
+                      depth_where_used    = depth_where_used
+                      depth_calls         = depth_calls
+                      include_sap_objects = include_sap_objects ).
 
     DATA(lt_units) = VALUE tt_units( ( unit ) ).
     DATA(lt_calls) = VALUE tt_calls( ).
@@ -802,7 +802,7 @@ CLASS lcl_task IMPLEMENTATION.
       DATA(lo_target) = lcl_units=>get_by_full_name( ls_ref-full_name ).
 
       "Alleen maatwerk?
-      IF me->include_sap_calls = abap_false.
+      IF me->include_sap_objects = abap_false.
         CHECK NOT lo_target->is_standard_sap( ).
       ENDIF.
 
@@ -909,22 +909,6 @@ CLASS lcl_task IMPLEMENTATION.
       EXCEPTIONS
         OTHERS                       = 0.
 
-    IF 1 = 2.
-      DATA lt_refs2 LIKE lt_refs.
-      SELECT id FROM euobj WHERE id LIKE '____' AND internal = '' INTO TABLE @lt_scope.
-      CALL FUNCTION 'RS_EU_CROSSREF'
-        EXPORTING
-          i_find_obj_cls               = ''
-          i_full_name                  = unit->full_name
-          expand_source_in_online_mode = abap_true
-        TABLES
-          i_findstrings                = lt_dummy
-          i_scope_object_cls           = lt_scope
-          o_founds                     = lt_refs2
-        EXCEPTIONS
-          OTHERS                       = 0.
-    ENDIF.
-
     SORT lt_refs.
     DELETE ADJACENT DUPLICATES FROM lt_refs.
     DELETE lt_refs WHERE grade <> cl_abap_compiler=>grade_direct.  "Alleen aanroepen, geen definities etc.
@@ -934,7 +918,7 @@ CLASS lcl_task IMPLEMENTATION.
       DATA(lo_source) = lcl_units=>get_by_cross_ref( ls_ref ).
 
       "Alleen maatwerk?
-      IF me->include_sap_calls = abap_false.
+      IF me->include_sap_objects = abap_false.
         CHECK NOT lo_source->is_standard_sap( ).
       ENDIF.
 
@@ -1157,9 +1141,9 @@ AT SELECTION-SCREEN ON VALUE-REQUEST FOR pa_comp.
 *--------------------------------------------------------------------*
 START-OF-SELECTION.
 *--------------------------------------------------------------------*
-  DATA(gs_result) = NEW lcl_task( )->run( unit              = go_unit
-                                          depth_calls       = pa_dep_c
-                                          depth_where_used  = pa_dep_w
-                                          include_sap_calls = pa_sap ).
+  DATA(gs_result) = NEW lcl_task( )->run( unit                = go_unit
+                                          depth_calls         = pa_dep_c
+                                          depth_where_used    = pa_dep_w
+                                          include_sap_objects = pa_sap ).
 
   NEW lcl_view( )->show( gs_result ).
