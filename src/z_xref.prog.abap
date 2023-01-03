@@ -31,12 +31,6 @@ CLASS:
   lcl_units DEFINITION DEFERRED.
 
 TYPES:
-  BEGIN OF ts_env,
-    system  TYPE string,
-    release TYPE sy-saprl,
-    date    TYPE d,
-  END OF ts_env,
-
   BEGIN OF ts_unit,
     id      TYPE string,
     sap     TYPE abap_bool,
@@ -51,12 +45,16 @@ TYPES:
   tt_calls TYPE STANDARD TABLE OF ts_call WITH KEY table_line,
 
   BEGIN OF ts_data,
-    env                 TYPE ts_env,
     type                TYPE string,
     name                TYPE string,
-    depth_where_used    TYPE i,
+    component           TYPE string,
+    unit                TYPE string,
     depth_calls         TYPE i,
+    depth_where_used    TYPE i,
     include_sap_objects TYPE abap_bool,
+    system              TYPE string,
+    release             TYPE sy-saprl,
+    date                TYPE d,
     units               TYPE SORTED TABLE OF ts_unit WITH UNIQUE KEY id,
     calls               TYPE tt_calls,
   END OF ts_data.
@@ -180,10 +178,10 @@ CLASS lcl_unit IMPLEMENTATION.
       lt_objects         TYPE STANDARD TABLE OF rseui_set WITH EMPTY KEY,
       lt_supported_types TYPE RANGE OF trobjtype.
 
-    DATA(lo_repository) = cl_sca_repository_access=>get_local_access( ).
-
     "Alleen voor hoofdobjecten
     CHECK lines( get_segments( ) ) = 1.
+
+    DATA(lo_repository) = cl_sca_repository_access=>get_local_access( ).
 
     CASE me->type.
       WHEN 'DEVC'.
@@ -666,7 +664,7 @@ CLASS lcl_units IMPLEMENTATION.
 ENDCLASS.
 
 *--------------------------------------------------------------------*
-CLASS lcl_task DEFINITION.
+CLASS lcl_main DEFINITION.
 *--------------------------------------------------------------------*
 
   PUBLIC SECTION.
@@ -695,18 +693,25 @@ CLASS lcl_task DEFINITION.
 ENDCLASS.
 
 *--------------------------------------------------------------------*
-CLASS lcl_task IMPLEMENTATION.
+CLASS lcl_main IMPLEMENTATION.
 *--------------------------------------------------------------------*
 
   METHOD run.
 
     me->include_sap_objects = include_sap_objects.
 
+    cl_http_server=>if_http_server~get_location( IMPORTING host = DATA(lv_host) ).  "Inclusief het domain
+
     result = VALUE #( type                = unit->type
                       name                = unit->get_name( )
-                      depth_where_used    = depth_where_used
+                      component           = substring_after( val = unit->id  sub = unit->get_name( ) )
+                      unit                = unit->id
                       depth_calls         = depth_calls
-                      include_sap_objects = include_sap_objects ).
+                      depth_where_used    = depth_where_used
+                      include_sap_objects = include_sap_objects
+                      system              = |{ sy-sysid }@{ match( val = lv_host  pcre = '\w+\.\w+$' ) }|  "DEV@company.com
+                      release             = sy-saprl
+                      date                = sy-datum ).
 
     DATA(lt_units) = VALUE tt_units( ( unit ) ).
     DATA(lt_calls) = VALUE tt_calls( ).
@@ -1041,16 +1046,9 @@ CLASS lcl_view IMPLEMENTATION.
       RETURN.
     ENDIF.
 
-    "Aanvullende info
-    cl_http_server=>if_http_server~get_location( IMPORTING host = DATA(lv_host) ).  "Inclusief het domain
-    me->data-env = VALUE #(
-      system  = |{ sy-sysid }@{ match( val = lv_host  pcre = '\w+\.\w+$' ) }|  "PED@asml.com
-      release = sy-saprl
-      date    = sy-datum ).
-
     "Download as JSON
     DATA(lv_json) = /ui2/cl_json=>serialize( data          = me->data
-                                             pretty_name   = abap_true  "Mixed case
+                                             pretty_name   = abap_true  "Camel case
                                              format_output = abap_true ).
     DATA(lt_json) = cl_bcs_convert=>string_to_soli( lv_json ).
     cl_gui_frontend_services=>gui_download( EXPORTING  filename = lv_filename
@@ -1141,7 +1139,7 @@ AT SELECTION-SCREEN ON VALUE-REQUEST FOR pa_comp.
 *--------------------------------------------------------------------*
 START-OF-SELECTION.
 *--------------------------------------------------------------------*
-  DATA(gs_result) = NEW lcl_task( )->run( unit                = go_unit
+  DATA(gs_result) = NEW lcl_main( )->run( unit                = go_unit
                                           depth_calls         = pa_dep_c
                                           depth_where_used    = pa_dep_w
                                           include_sap_objects = pa_sap ).
