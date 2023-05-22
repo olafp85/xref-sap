@@ -506,17 +506,26 @@ CLASS lcl_units IMPLEMENTATION.
       name = ls_object-obj_name.
     ENDIF.
 
-    IF type = 'FUNC'.
-      SELECT SINGLE @abap_true
-        FROM tfdir
-       WHERE funcname = @name
-        INTO @DATA(lv_exists).
-    ELSE.
-      DATA(lo_repository) = cl_sca_repository_access=>get_local_access( ).
-      lv_exists = lo_repository->exists_object( VALUE #( pgmid    = 'R3TR'
-                                                         obj_type = type
-                                                         obj_name = name ) ).
-    ENDIF.
+    CASE type.
+      WHEN 'FUNC'.
+        SELECT SINGLE @abap_true
+          FROM tfdir
+         WHERE funcname = @name
+          INTO @DATA(lv_exists).
+
+      WHEN 'DEVC'.  "Bijv. $ABAPGIT
+        SELECT SINGLE @abap_true
+          FROM tdevc
+         WHERE devclass = @name
+          INTO @lv_exists.
+
+      WHEN OTHERS.
+        DATA(lo_repository) = cl_sca_repository_access=>get_local_access( ).
+        lv_exists = lo_repository->exists_object( VALUE #( pgmid    = 'R3TR'
+                                                           obj_type = type
+                                                           obj_name = name ) ).
+    ENDCASE.
+
     IF lv_exists = abap_false.
       RETURN.
     ENDIF.
