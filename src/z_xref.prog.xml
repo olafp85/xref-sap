@@ -19,19 +19,31 @@
     <item>
      <ID>I</ID>
      <KEY>BL2</KEY>
-     <ENTRY>Recursie level</ENTRY>
+     <ENTRY>Recursion level</ENTRY>
      <LENGTH>24</LENGTH>
     </item>
     <item>
      <ID>I</ID>
      <KEY>BL3</KEY>
-     <ENTRY>Overig</ENTRY>
+     <ENTRY>Other</ENTRY>
      <LENGTH>16</LENGTH>
     </item>
     <item>
      <ID>R</ID>
      <ENTRY>Cross references</ENTRY>
      <LENGTH>16</LENGTH>
+    </item>
+    <item>
+     <ID>S</ID>
+     <KEY>CB_ALV</KEY>
+     <ENTRY>Show result in ALV</ENTRY>
+     <LENGTH>26</LENGTH>
+    </item>
+    <item>
+     <ID>S</ID>
+     <KEY>CB_WEB</KEY>
+     <ENTRY>Show result in web application</ENTRY>
+     <LENGTH>38</LENGTH>
     </item>
     <item>
      <ID>S</ID>
@@ -60,10 +72,82 @@
     <item>
      <ID>S</ID>
      <KEY>PA_SAP</KEY>
-     <ENTRY>Inclusief SAP-objecten</ENTRY>
+     <ENTRY>Including SAP-objects</ENTRY>
      <LENGTH>30</LENGTH>
     </item>
    </TPOOL>
+   <I18N_TPOOL>
+    <item>
+     <LANGUAGE>N</LANGUAGE>
+     <TEXTPOOL>
+      <item>
+       <ID>I</ID>
+       <KEY>BL1</KEY>
+       <ENTRY>Unit</ENTRY>
+       <LENGTH>14</LENGTH>
+      </item>
+      <item>
+       <ID>I</ID>
+       <KEY>BL2</KEY>
+       <ENTRY>Recursie diepte</ENTRY>
+       <LENGTH>24</LENGTH>
+      </item>
+      <item>
+       <ID>I</ID>
+       <KEY>BL3</KEY>
+       <ENTRY>Overig</ENTRY>
+       <LENGTH>16</LENGTH>
+      </item>
+      <item>
+       <ID>R</ID>
+       <ENTRY>Cross referenties</ENTRY>
+       <LENGTH>70</LENGTH>
+      </item>
+      <item>
+       <ID>S</ID>
+       <KEY>CB_ALV</KEY>
+       <ENTRY>Toon resultaat in ALV</ENTRY>
+       <LENGTH>38</LENGTH>
+      </item>
+      <item>
+       <ID>S</ID>
+       <KEY>CB_WEB</KEY>
+       <ENTRY>Toon resultaat in web app</ENTRY>
+       <LENGTH>38</LENGTH>
+      </item>
+      <item>
+       <ID>S</ID>
+       <KEY>PA_COMP</KEY>
+       <ENTRY>Component</ENTRY>
+       <LENGTH>38</LENGTH>
+      </item>
+      <item>
+       <ID>S</ID>
+       <KEY>PA_DEP_C</KEY>
+       <ENTRY>Aanroepen</ENTRY>
+       <LENGTH>38</LENGTH>
+      </item>
+      <item>
+       <ID>S</ID>
+       <KEY>PA_DEP_W</KEY>
+       <ENTRY>Where-used</ENTRY>
+       <LENGTH>38</LENGTH>
+      </item>
+      <item>
+       <ID>S</ID>
+       <KEY>PA_NAME</KEY>
+       <ENTRY>Naam</ENTRY>
+       <LENGTH>38</LENGTH>
+      </item>
+      <item>
+       <ID>S</ID>
+       <KEY>PA_SAP</KEY>
+       <ENTRY>Inclusief SAP-objecten</ENTRY>
+       <LENGTH>38</LENGTH>
+      </item>
+     </TEXTPOOL>
+    </item>
+   </I18N_TPOOL>
   </asx:values>
  </asx:abap>
 </abapGit>

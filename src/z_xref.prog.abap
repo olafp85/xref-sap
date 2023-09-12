@@ -718,7 +718,7 @@ CLASS lcl_main IMPLEMENTATION.
                       depth_calls         = depth_calls
                       depth_where_used    = depth_where_used
                       include_sap_objects = include_sap_objects
-                      system              = |{ sy-sysid }@{ match( val = lv_host  pcre = '\w+\.\w+$' ) }|  "DEV@company.com
+                      system              = |{ sy-sysid }@{ match( val = lv_host  regex = '\w+\.\w+$' ) }|  "DEV@company.com
                       release             = sy-saprl
                       date                = sy-datum ).
 
@@ -746,11 +746,13 @@ CLASS lcl_main IMPLEMENTATION.
 
     "Aanroepen
     DATA(lv_index) = 0.
-    cl_reca_gui_status_bar=>start_pi( id_high = lines( lt_units ) ).
     IF depth_calls > 0.
       LOOP AT lt_units INTO lo_unit.
-        cl_reca_gui_status_bar=>update_pi( id_text = |Calls van { lo_unit->id }|  id_value = lv_index ).
-        lv_index += 1.
+        "Alternatieve voortgangsindicator is CL_RECA_GUI_STATUS_BAR maar deze bestaat niet op CRM
+        cl_crm_bsp_cu_progind=>display( iv_act_value = lv_index
+                                        iv_max_value = lines( lt_units )
+                                        iv_info_text = |Calls van { lo_unit->id }| ).
+        lv_index = lv_index + 1.
 
         get_calls( EXPORTING unit  = lo_unit
                              depth = depth_calls
@@ -760,11 +762,12 @@ CLASS lcl_main IMPLEMENTATION.
 
     "Where-used
     lv_index = 0.
-    cl_reca_gui_status_bar=>start_pi( id_high = lines( lt_units ) ).
     IF depth_where_used > 0.
       LOOP AT lt_units INTO lo_unit.
-        cl_reca_gui_status_bar=>update_pi( id_text = |Where-used van { lo_unit->id }|  id_value = lv_index ).
-        lv_index += 1.
+        cl_crm_bsp_cu_progind=>display( iv_act_value = lv_index
+                                        iv_max_value = lines( lt_units )
+                                        iv_info_text = |Where-used van { lo_unit->id }| ).
+        lv_index = lv_index + 1.
 
         get_where_used( EXPORTING unit  = lo_unit
                                   depth = depth_where_used
@@ -881,7 +884,7 @@ CLASS lcl_main IMPLEMENTATION.
       "Aanroep van de interface (zoals ook gebeurt zonder gebruik van een alias)
       "(\TY:ZCLASS4\IN):ZINTERFACE4B\ME:METHOD2 => \TY:ZINTERFACE4B\ME:METHOD2
       "\PR:ZPROG25(\TY:LCLASS3\IN):LINTERFACE3\ME:METHOD2 => \PR:ZPROG25\TY:LINTERFACE3\ME:METHOD2
-      DATA(lv_interface) = replace( val = lv_alias  pcre = `\\TY.*\\IN`  with = `\\TY` ).
+      DATA(lv_interface) = replace( val = lv_alias  regex = `\\TY.*\\IN`  with = `\\TY` ).
       lv_unit = `\` && segment( val = lv_interface  index = 2  sep = `\` ).
       lo_target = lcl_units=>get_by_full_name( lv_unit )->get_component( substring_after( val = lv_interface  sub = lv_unit ) ).
       INSERT VALUE #( source = unit->id   target = lo_target->id ) INTO TABLE lt_calls.
@@ -974,7 +977,7 @@ CLASS lcl_main IMPLEMENTATION.
 ENDCLASS.
 
 *--------------------------------------------------------------------*
-CLASS lcl_view DEFINITION.
+CLASS lcl_alv_view DEFINITION.
 *--------------------------------------------------------------------*
 
   PUBLIC SECTION.
@@ -982,7 +985,7 @@ CLASS lcl_view DEFINITION.
       show
         IMPORTING data TYPE ts_data,
       on_before_salv_function
-        FOR EVENT before_salv_function OF cl_salv_events
+                  FOR EVENT before_salv_function OF cl_salv_events
         IMPORTING e_salv_function,
       download.
 
@@ -993,7 +996,7 @@ CLASS lcl_view DEFINITION.
 ENDCLASS.
 
 *--------------------------------------------------------------------*
-CLASS lcl_view IMPLEMENTATION.
+CLASS lcl_alv_view IMPLEMENTATION.
 *--------------------------------------------------------------------*
   METHOD show.
 
@@ -1058,7 +1061,8 @@ CLASS lcl_view IMPLEMENTATION.
     "Download as JSON
     DATA(lv_json) = /ui2/cl_json=>serialize( data          = me->data
                                              pretty_name   = abap_true  "Camel case
-                                             format_output = abap_true ).
+                                             "format_output = abap_true
+                                             ).
     DATA(lt_json) = cl_bcs_convert=>string_to_soli( lv_json ).
     cl_gui_frontend_services=>gui_download( EXPORTING  filename = lv_filename
                                                        write_lf = abap_false
@@ -1068,6 +1072,167 @@ CLASS lcl_view IMPLEMENTATION.
       "Error writing file
       MESSAGE e016(fes).
     ENDIF.
+
+  ENDMETHOD.
+
+ENDCLASS.
+
+*--------------------------------------------------------------------*
+CLASS lcl_web_view DEFINITION.
+*--------------------------------------------------------------------*
+
+  PUBLIC SECTION.
+    METHODS:
+      show
+        IMPORTING data TYPE ts_data.
+
+ENDCLASS.
+
+*--------------------------------------------------------------------*
+CLASS lcl_web_view IMPLEMENTATION.
+*--------------------------------------------------------------------*
+  METHOD show.
+
+    DATA:
+      lv_url  TYPE swk_url,
+      lt_html TYPE STANDARD TABLE OF so_text255 WITH DEFAULT KEY.
+
+    DATA(lv_json) = /ui2/cl_json=>serialize( data        = data
+                                             pretty_name = abap_true ).  "Camel case
+
+    "Extra escaping is nodig omdat de json allereerst naar een string wordt geplaatst
+    REPLACE ALL OCCURRENCES OF '\' IN lv_json WITH '\\'.
+    DATA(lt_json) = cl_bcs_convert=>string_to_soli( lv_json ).
+
+    DATA(lv_html) =
+      `<!DOCTYPE html>` &&
+      `<html>` &&
+      `` &&
+      `<head>` &&
+      `    <meta charset="UTF-8" />` &&
+      `    <style>` &&
+      `        html {` &&
+      `            height: 100%;` &&
+      `        }` &&
+      `` &&
+      `        body {` &&
+      `            height: 100%;` &&
+      `            margin: 0;` &&
+      `            font-family: Arial, Helvetica, sans-serif;` &&
+      `            display: grid;` &&
+      `            justify-items: center;` &&
+      `            align-items: center;` &&
+      `            background-color: #3a3a3a;` &&
+      `        }` &&
+      `` &&
+      `        main {` &&
+      `            width: 50%;` &&
+      `            height: 50%;` &&
+      `            display: grid;` &&
+      `            justify-items: center;` &&
+      `            align-items: center;` &&
+      `            background-color: white;` &&
+      `            border-radius: 7px;` &&
+      `            box-shadow: 0px 0px 5px 2px black;` &&
+      `        }` &&
+      `` &&
+      `        #login-form {` &&
+      `            align-self: flex-start;` &&
+      `            display: grid;` &&
+      `            justify-items: center;` &&
+      `            align-items: center;` &&
+      `        }` &&
+      `` &&
+      `        #login-error {` &&
+      `            color: red;` &&
+      `            opacity: 0;` &&
+      `        }` &&
+      `` &&
+      `        .login-form-field {` &&
+      `            border: none;` &&
+      `            border-bottom: 1px solid #3a3a3a;` &&
+      `            margin-bottom: 10px;` &&
+      `            border-radius: 3px;` &&
+      `            outline: none;` &&
+      `            padding: 0px 0px 5px 5px;` &&
+      `        }` &&
+      `` &&
+      `        #login-form-submit {` &&
+      `            width: 100%;` &&
+      `            padding: 7px;` &&
+      `            border: none;` &&
+      `            border-radius: 5px;` &&
+      `            color: white;` &&
+      `            font-weight: bold;` &&
+      `            background-color: #3a3a3a;` &&
+      `            cursor: pointer;` &&
+      `            outline: none;` &&
+      `        }` &&
+      `    </style>` &&
+      `</head>` &&
+      `` &&
+      `<body>` &&
+      `    <main>` &&
+      `        <h1 id="login-header">Login</h1>` &&
+      `        <form id="login-form">` &&
+      `            <p id="login-error">Invalid credentials</p>` &&
+      `            <input type="email" name="email" class="login-form-field" placeholder="E-mail" required>` &&
+      `            <input type="password" name="password" class="login-form-field" placeholder="Password" required>` &&
+      `            <input type="submit" value="Login" id="login-form-submit">` &&
+      `        </form>` &&
+      `    </main>` &&
+      `</body>` &&
+      `` &&
+      `<script>` &&
+      `    const loginForm = document.getElementById('login-form');` &&
+      `    const loginError = document.getElementById("login-error");` &&
+      `` &&
+      `    loginForm.onsubmit = async (event) => {` &&
+      `        event.preventDefault();` &&
+      `        loginError.style.opacity = 0;` &&
+      `` &&
+      `        let response = await fetch('https://luukpohlmann.nl/apps/xref-api/login', {` &&
+      `            method: 'POST',` &&
+      `            body: new FormData(loginForm)` &&
+      `        });` &&
+      `        if (!response.ok) {` &&
+      `            loginError.style.opacity = 1;` &&
+      `            return;` &&
+      `        }` &&
+      `` &&
+      `        let result = await response.json();` &&
+      |        const json = '{ lv_json }';| &&
+      `` &&
+      `        response = await fetch('https://luukpohlmann.nl/apps/xref-api/xrefs', {` &&
+      `            method: 'POST',` &&
+      `            headers: {` &&
+      `                authorization: 'Bearer ' + result.token,` &&
+      `                "content-type": "application/json",` &&
+      `                accept: "application/json"` &&
+      `            },` &&
+      `            body: json` &&
+      `        });` &&
+      `` &&
+      `        result = await response.json();` &&
+      `` &&
+      `        if (!response.ok) {` &&
+      `            loginError.textContent = result.message;` &&
+      `            loginError.style.opacity = 1;` &&
+      `            return;` &&
+      `        }` &&
+      `` &&
+      `        location.href = 'https://luukpohlmann.nl/apps/xref/#/' + result.id;` &&
+      `    };` &&
+      `</script>` &&
+      `` &&
+      `</html>`.
+
+    cl_abap_browser=>show_html(
+      html_string = lv_html
+      container   = cl_gui_container=>default_screen ).
+
+    "Trigger the default screen
+    WRITE space.
 
   ENDMETHOD.
 
@@ -1088,14 +1253,16 @@ PARAMETERS:
 SELECTION-SCREEN END OF BLOCK bl1.
 
 SELECTION-SCREEN BEGIN OF BLOCK bl2 WITH FRAME TITLE TEXT-bl2.
-  PARAMETERS:
-    pa_dep_c TYPE i DEFAULT 1,
-    pa_dep_w TYPE i DEFAULT 1.
+PARAMETERS:
+  pa_dep_c TYPE i DEFAULT 1,
+  pa_dep_w TYPE i DEFAULT 1.
 SELECTION-SCREEN END OF BLOCK bl2.
 
 SELECTION-SCREEN BEGIN OF BLOCK bl3 WITH FRAME TITLE TEXT-bl3.
-  PARAMETERS:
-    pa_sap AS CHECKBOX DEFAULT abap_true.
+PARAMETERS:
+  pa_sap AS CHECKBOX DEFAULT abap_true,
+  cb_web RADIOBUTTON GROUP a,
+  cb_alv RADIOBUTTON GROUP a.
 SELECTION-SCREEN END OF BLOCK bl3.
 
 *--------------------------------------------------------------------*
@@ -1153,4 +1320,9 @@ START-OF-SELECTION.
                                           depth_where_used    = pa_dep_w
                                           include_sap_objects = pa_sap ).
 
-  NEW lcl_view( )->show( gs_result ).
+  CASE abap_true.
+    WHEN cb_web.
+      NEW lcl_web_view( )->show( gs_result ).
+    WHEN cb_alv.
+      NEW lcl_alv_view( )->show( gs_result ).
+  ENDCASE.
