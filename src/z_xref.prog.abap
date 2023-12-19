@@ -220,6 +220,7 @@ CLASS lcl_unit IMPLEMENTATION.
                     p_types  = VALUE #( sign = 'I' option = 'EQ' ( low = cl_abap_compiler=>tag_method ) )
                     p_grades = VALUE #( sign = 'I' option = 'EQ' ( low = cl_abap_compiler=>grade_definition ) )
           IMPORTING p_result = DATA(lt_definitions) ).
+
         "Negeer lokale testklassen
         cl_abap_compiler=>create( get_program( ) )->get_all_refs(
           EXPORTING p_local  = abap_true
@@ -229,7 +230,11 @@ CLASS lcl_unit IMPLEMENTATION.
         LOOP AT lt_local_classes INTO DATA(ls_test_class) WHERE mode1 = cl_abap_compiler=>mode1_test.
           DELETE lt_definitions WHERE full_name CS ls_test_class-full_name.
         ENDLOOP.
-        components = VALUE #( BASE components FOR d IN lt_definitions WHERE ( full_name CP '\PR*' ) ( lcl_units=>get_by_full_name( d-full_name ) ) ).
+
+        LOOP AT lt_definitions INTO DATA(ls_definition).
+          "Dubbelingen kunnen voorkomen (CL_GUI_ALV_GRID, versie 750) maar worden afgevangen door de hash-tabel
+          INSERT lcl_units=>get_by_full_name( ls_definition-full_name ) INTO TABLE components.
+        ENDLOOP.
 
       WHEN 'FUGR'.
         "Functies
