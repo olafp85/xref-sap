@@ -1292,13 +1292,19 @@ AT SELECTION-SCREEN ON BLOCK bl1.
 *--------------------------------------------------------------------*
 AT SELECTION-SCREEN ON VALUE-REQUEST FOR pa_comp.
 *--------------------------------------------------------------------*
-  TRY.
-      pa_name = to_upper( cl_cnv_frm_ui_shlp_utils=>get_parameter_value( 'PA_NAME' ) ).  "Actuele waarde (onafhankelijk van roundtrip)
-      go_unit = lcl_units=>get( pa_name ).
+  "Lees de opgegeven unit naam (onafhankelijk van roundtrip)
+  DATA(gt_fields) = VALUE dynpread_t( ( fieldname = 'PA_NAME' ) ).
+  CALL FUNCTION 'DYNP_VALUES_READ'
+    EXPORTING
+      dyname             = sy-repid
+      dynumb             = sy-dynnr
+      translate_to_upper = abap_true
+    TABLES
+      dynpfields         = gt_fields
+    EXCEPTIONS
+      OTHERS             = 0.
 
-    CATCH cx_cnv_frm_ui INTO DATA(gx_exc).
-      MESSAGE gx_exc->msg TYPE 'E'.
-  ENDTRY.
+  go_unit = lcl_units=>get( gt_fields[ 1 ]-fieldvalue ).
 
   IF go_unit IS BOUND.
     gt_components = COND #( WHEN go_unit->type = 'DEVC'
