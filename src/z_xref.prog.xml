@@ -14,36 +14,36 @@
      <ID>I</ID>
      <KEY>BL1</KEY>
      <ENTRY>Unit</ENTRY>
-     <LENGTH>14</LENGTH>
+     <LENGTH>70</LENGTH>
     </item>
     <item>
      <ID>I</ID>
      <KEY>BL2</KEY>
      <ENTRY>Recursion level</ENTRY>
-     <LENGTH>24</LENGTH>
+     <LENGTH>70</LENGTH>
     </item>
     <item>
      <ID>I</ID>
      <KEY>BL3</KEY>
      <ENTRY>Other</ENTRY>
-     <LENGTH>16</LENGTH>
+     <LENGTH>70</LENGTH>
+    </item>
+    <item>
+     <ID>I</ID>
+     <KEY>E01</KEY>
+     <ENTRY>No processable unit found</ENTRY>
+     <LENGTH>70</LENGTH>
+    </item>
+    <item>
+     <ID>I</ID>
+     <KEY>SC1</KEY>
+     <ENTRY>One-time initialization</ENTRY>
+     <LENGTH>70</LENGTH>
     </item>
     <item>
      <ID>R</ID>
      <ENTRY>Cross references</ENTRY>
      <LENGTH>16</LENGTH>
-    </item>
-    <item>
-     <ID>S</ID>
-     <KEY>CB_ALV</KEY>
-     <ENTRY>Show result in ALV</ENTRY>
-     <LENGTH>26</LENGTH>
-    </item>
-    <item>
-     <ID>S</ID>
-     <KEY>CB_WEB</KEY>
-     <ENTRY>Show result in web application</ENTRY>
-     <LENGTH>38</LENGTH>
     </item>
     <item>
      <ID>S</ID>
@@ -68,6 +68,12 @@
      <KEY>PA_NAME</KEY>
      <ENTRY>Name</ENTRY>
      <LENGTH>12</LENGTH>
+    </item>
+    <item>
+     <ID>S</ID>
+     <KEY>PA_REAN</KEY>
+     <ENTRY>Always reanalyze</ENTRY>
+     <LENGTH>24</LENGTH>
     </item>
     <item>
      <ID>S</ID>

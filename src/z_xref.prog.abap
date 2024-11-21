@@ -17,14 +17,6 @@ REPORT z_xref.
 * \PR:PROG\TY:CLASS\ME:METHOD
 * \PR:PROG\TY:CLASS\IN:INTERFACE\ME:METHOD
 *--------------------------------------------------------------------*
-* Known issues
-* 1) \PR:ZCM_GET_BENTYPES==============E » Enhancement implementation ZCM_GET_BENTYPES
-* 2) In de where-used van PR:/Z_CROSS_REFERENCES/TY:LCL_UNIT/ME:INIT zit nu ook
-*    methode LTCL_UNIT/ME:SET_UNIT omdat dit een reguliere methode is
-* 3) ZCL_*DIP_DATA->GET_ITEMS heeft nu geen where-used, overigens in lijn
-*    met de where-used vanuit de class-builder, terwijl dit wellicht
-*    handiger/wenselijk is: <BRON> -> ZIF_*DIP_DATA -> ZCL_*DIP_DATA
-*--------------------------------------------------------------------*
 
 CLASS:
   lcl_unit  DEFINITION DEFERRED,
@@ -44,7 +36,7 @@ TYPES:
   END OF ts_call,
   tt_calls TYPE STANDARD TABLE OF ts_call WITH KEY table_line,
 
-  BEGIN OF ts_data,
+  BEGIN OF ts_xrefs,
     type                TYPE string,
     name                TYPE string,
     component           TYPE string,
@@ -57,7 +49,114 @@ TYPES:
     date                TYPE d,
     units               TYPE SORTED TABLE OF ts_unit WITH UNIQUE KEY id,
     calls               TYPE tt_calls,
-  END OF ts_data.
+  END OF ts_xrefs.
+
+*--------------------------------------------------------------------*
+CLASS lcl_cache DEFINITION.
+*--------------------------------------------------------------------*
+
+  PUBLIC SECTION.
+    TYPES:
+      tt_keys TYPE STANDARD TABLE OF zxref_cache WITH EMPTY KEY.
+
+    CLASS-METHODS:
+      add
+        IMPORTING key TYPE zxref_cache,
+      fill
+        IMPORTING keys TYPE tt_keys,
+      find
+        IMPORTING unit                TYPE string
+                  depth_calls         TYPE i
+                  depth_where_used    TYPE i
+                  include_sap_objects TYPE abap_bool
+        RETURNING VALUE(key)          TYPE zxref_cache,
+      get
+        IMPORTING unit                TYPE string
+                  depth_calls         TYPE i
+                  depth_where_used    TYPE i
+                  include_sap_objects TYPE abap_bool
+        RETURNING VALUE(key)          TYPE zxref_cache,
+      is_empty
+        RETURNING VALUE(result) TYPE abap_bool.
+
+ENDCLASS.
+
+*--------------------------------------------------------------------*
+CLASS lcl_cache IMPLEMENTATION.
+*--------------------------------------------------------------------*
+
+  METHOD add.
+
+    DATA(ls_key) = VALUE zxref_cache( BASE key
+                                      created_on = sy-datum
+                                      created_by = sy-uname ).
+    MODIFY zxref_cache FROM ls_key.
+    COMMIT WORK.
+
+  ENDMETHOD.
+
+  METHOD fill.
+
+    INSERT zxref_cache FROM TABLE keys.
+    COMMIT WORK.
+
+  ENDMETHOD.
+
+  METHOD find.
+
+    DATA:
+      lr_include_sap_objects TYPE RANGE OF abap_bool.
+
+    IF include_sap_objects = abap_true.
+      lr_include_sap_objects = VALUE #( ( sign = 'I' option = 'EQ' low = abap_true ) ).
+    ENDIF.
+
+    SELECT *
+      FROM zxref_cache UP TO 1 ROWS
+      INTO @key
+     WHERE unit                 = @unit
+       AND depth_calls         >= @depth_calls
+       AND depth_where_used    >= @depth_where_used
+       AND include_sap_objects IN @lr_include_sap_objects
+     ORDER BY depth_calls ASCENDING,
+              depth_calls ASCENDING.
+    ENDSELECT.
+
+  ENDMETHOD.
+
+  METHOD get.
+
+    SELECT SINGLE *
+      FROM zxref_cache
+     WHERE unit                = @unit
+       AND depth_calls         = @depth_calls
+       AND depth_where_used    = @depth_where_used
+       AND include_sap_objects = @include_sap_objects
+      INTO @key.
+
+  ENDMETHOD.
+
+  METHOD is_empty.
+
+    DATA:
+      lv_subrc TYPE i.
+
+    CALL FUNCTION 'DD_EXISTS_DATA'
+      EXPORTING
+        tabclass = space
+        tabname  = 'ZXREF_CACHE'
+      IMPORTING
+        subrc    = lv_subrc
+      EXCEPTIONS
+        OTHERS   = 0.
+
+    IF lv_subrc <> 0.
+      result = abap_true.
+    ENDIF.
+
+  ENDMETHOD.
+
+ENDCLASS.
 
 *--------------------------------------------------------------------*
 CLASS lcl_unit DEFINITION
@@ -678,7 +777,45 @@ CLASS lcl_units IMPLEMENTATION.
 ENDCLASS.
 
 *--------------------------------------------------------------------*
-CLASS lcl_main DEFINITION.
+CLASS lcl_util DEFINITION.
+*--------------------------------------------------------------------*
+
+  PUBLIC SECTION.
+    CLASS-METHODS:
+      get_system
+        RETURNING VALUE(system) TYPE string,
+      get_token
+        RETURNING VALUE(token) TYPE string.
+
+ENDCLASS.
+
+*--------------------------------------------------------------------*
+CLASS lcl_util IMPLEMENTATION.
+*--------------------------------------------------------------------*
+
+  METHOD get_system.
+
+    "Hostnaam inclusief het domein
+    cl_http_server=>get_location( IMPORTING host = DATA(lv_host) ).
+
+    "DEV@company.com
+    system = |{ sy-sysid }@{ substring_after( val = lv_host  sub = '.' ) }|.
+
+  ENDMETHOD.
+
+  METHOD get_token.
+
+    SELECT token UP TO 1 ROWS
+      FROM zxref_auth
+      INTO @token.
+    ENDSELECT.
+
+  ENDMETHOD.
+
+ENDCLASS.
+
+*--------------------------------------------------------------------*
+CLASS lcl_task_analyze DEFINITION.
 *--------------------------------------------------------------------*
 
   PUBLIC SECTION.
@@ -688,7 +825,7 @@ CLASS lcl_main DEFINITION.
                   depth_calls         TYPE i OPTIONAL
                   depth_where_used    TYPE i OPTIONAL
                   include_sap_objects TYPE abap_bool OPTIONAL
-        RETURNING VALUE(result)       TYPE ts_data.
+        RETURNING VALUE(xrefs)        TYPE ts_xrefs.
 
   PRIVATE SECTION.
     DATA:
@@ -707,25 +844,23 @@ CLASS lcl_main DEFINITION.
 ENDCLASS.
 
 *--------------------------------------------------------------------*
-CLASS lcl_main IMPLEMENTATION.
+CLASS lcl_task_analyze IMPLEMENTATION.
 *--------------------------------------------------------------------*
 
   METHOD run.
 
     me->include_sap_objects = include_sap_objects.
 
-    cl_http_server=>if_http_server~get_location( IMPORTING host = DATA(lv_host) ).  "Inclusief het domain
-
-    result = VALUE #( type                = unit->type
-                      name                = unit->get_name( )
-                      component           = substring_after( val = unit->id  sub = unit->get_name( ) )
-                      unit                = unit->id
-                      depth_calls         = depth_calls
-                      depth_where_used    = depth_where_used
-                      include_sap_objects = include_sap_objects
-                      system              = |{ sy-sysid }@{ match( val = lv_host  regex = '\w+\.\w+$' ) }|  "DEV@company.com
-                      release             = sy-saprl
-                      date                = sy-datum ).
+    xrefs = VALUE #( type                = unit->type
+                     name                = unit->get_name( )
+                     component           = substring_after( val = unit->id  sub = unit->get_name( ) )
+                     unit                = unit->id
+                     depth_calls         = depth_calls
+                     depth_where_used    = depth_where_used
+                     include_sap_objects = include_sap_objects
+                     system              = lcl_util=>get_system( )
+                     release             = sy-saprl
+                     date                = sy-datum ).
 
     DATA(lt_units) = VALUE tt_units( ( unit ) ).
     DATA(lt_calls) = VALUE tt_calls( ).
@@ -788,14 +923,14 @@ CLASS lcl_main IMPLEMENTATION.
     LOOP AT lt_units INTO lo_unit.  "uniek op table_line
       INSERT VALUE #( id      = lo_unit->id
                       sap     = lo_unit->is_standard_sap( )
-                      package = lo_unit->get_package( ) ) INTO TABLE result-units.  "uniek op ID
+                      package = lo_unit->get_package( ) ) INTO TABLE xrefs-units.  "uniek op ID
 
     ENDLOOP.
 
     "Alle calls
     SORT lt_calls.
     DELETE ADJACENT DUPLICATES FROM lt_calls.
-    result-calls = lt_calls.
+    xrefs-calls = lt_calls.
 
   ENDMETHOD.
 
@@ -982,133 +1117,147 @@ CLASS lcl_main IMPLEMENTATION.
 ENDCLASS.
 
 *--------------------------------------------------------------------*
-CLASS lcl_alv_view DEFINITION.
+CLASS lcl_task_show DEFINITION.
 *--------------------------------------------------------------------*
 
   PUBLIC SECTION.
     METHODS:
-      show
-        IMPORTING data TYPE ts_data,
-      on_before_salv_function
-                  FOR EVENT before_salv_function OF cl_salv_events
-        IMPORTING e_salv_function,
-      download.
-
-  PRIVATE SECTION.
-    DATA:
-      data TYPE ts_data.
+      run
+        IMPORTING key   TYPE zxref_cache
+                  xrefs TYPE ts_xrefs.
 
 ENDCLASS.
 
 *--------------------------------------------------------------------*
-CLASS lcl_alv_view IMPLEMENTATION.
+CLASS lcl_task_show IMPLEMENTATION.
 *--------------------------------------------------------------------*
-  METHOD show.
 
-    TRY.
-        me->data = data.
-        cl_salv_table=>factory(
-          IMPORTING r_salv_table = DATA(lo_alv)
-          CHANGING  t_table      = me->data-calls ).
+  METHOD run.
 
-        lo_alv->get_columns( )->set_optimize( ).
-        lo_alv->get_columns( )->get_column( 'SOURCE' )->set_medium_text( 'Source' ).
-        lo_alv->get_columns( )->get_column( 'TARGET' )->set_medium_text( 'Target' ).
+    TYPES:
+      BEGIN OF ts_key,
+        unit                TYPE string,
+        depth_calls         TYPE i,
+        depth_where_used    TYPE i,
+        include_sap_objects TYPE abap_bool,
+        system              TYPE string,
+      END OF ts_key.
 
-        lo_alv->get_layout( )->set_key( VALUE #( report = sy-repid ) ).
-        lo_alv->get_layout( )->set_save_restriction( if_salv_c_layout=>restrict_none ).
-        lo_alv->get_layout( )->set_default( abap_true ).
-
-        "Activeer de standaard functie "Local File..."
-        lo_alv->get_functions( )->set_export_localfile( ).
-
-        SET HANDLER on_before_salv_function FOR lo_alv->get_event( ).
-
-        lo_alv->display( ).
-
-      CATCH cx_salv_error INTO DATA(lx_alv).
-        MESSAGE lx_alv TYPE 'E'.
-    ENDTRY.
-
-  ENDMETHOD.
-
-  METHOD on_before_salv_function.
-
-    "Kaap de standaard functie "Local File..."
-    CHECK e_salv_function = '%PC'.
-
-    download( ).
-
-    "Voorkom de standaard afhandeling
-    MESSAGE '' TYPE 'E'.
-
-  ENDMETHOD.
-
-  METHOD download.
-
-    DATA:
-      lv_file        TYPE string,
-      lv_path        TYPE string,
-      lv_filename    TYPE string,
-      lv_user_action TYPE i.
-
-    DATA(lv_default) = |{ me->data-type }-{ me->data-name }-{ me->data-depth_calls }-{ me->data-depth_where_used }.json|.
-    lv_default = translate( val = lv_default from = '/' to = '^' ).
-    cl_gui_frontend_services=>file_save_dialog( EXPORTING default_file_name = lv_default
-                                                CHANGING  filename          = lv_file
-                                                          path              = lv_path
-                                                          fullpath          = lv_filename
-                                                          user_action       = lv_user_action ).
-    IF lv_user_action = cl_gui_frontend_services=>action_cancel.
-      RETURN.
+    IF key IS NOT INITIAL.
+      DATA(ls_key) = VALUE ts_key( BASE CORRESPONDING #( key ) system = lcl_util=>get_system( ) ).
+      DATA(lv_key_json) = /ui2/cl_json=>serialize( data        = ls_key
+                                                   pretty_name = /ui2/cl_json=>pretty_mode-camel_case ).
     ENDIF.
 
-    "Download as JSON
-    DATA(lv_json) = /ui2/cl_json=>serialize( data          = me->data
-                                             pretty_name   = abap_true  "Camel case
-                                             "format_output = abap_true
-                                             ).
-    DATA(lt_json) = cl_bcs_convert=>string_to_soli( lv_json ).
-    cl_gui_frontend_services=>gui_download( EXPORTING  filename = lv_filename
-                                                       write_lf = abap_false
-                                            CHANGING   data_tab = lt_json
-                                            EXCEPTIONS OTHERS   = 1 ).
-    IF sy-subrc <> 0.
-      "Error writing file
-      MESSAGE e016(fes).
+    IF xrefs IS NOT INITIAL.
+      DATA(lv_xrefs_json) = /ui2/cl_json=>serialize( data        = xrefs
+                                                     pretty_name = /ui2/cl_json=>pretty_mode-camel_case ).
     ENDIF.
-
-  ENDMETHOD.
-
-ENDCLASS.
-
-*--------------------------------------------------------------------*
-CLASS lcl_web_view DEFINITION.
-*--------------------------------------------------------------------*
-
-  PUBLIC SECTION.
-    METHODS:
-      show
-        IMPORTING data TYPE ts_data.
-
-ENDCLASS.
-
-*--------------------------------------------------------------------*
-CLASS lcl_web_view IMPLEMENTATION.
-*--------------------------------------------------------------------*
-  METHOD show.
-
-    DATA:
-      lv_url  TYPE swk_url,
-      lt_html TYPE STANDARD TABLE OF so_text255 WITH DEFAULT KEY.
-
-    DATA(lv_json) = /ui2/cl_json=>serialize( data        = data
-                                             pretty_name = abap_true ).  "Camel case
 
     "Extra escaping is nodig omdat de json allereerst naar een string wordt geplaatst
-    REPLACE ALL OCCURRENCES OF '\' IN lv_json WITH '\\'.
-    DATA(lt_json) = cl_bcs_convert=>string_to_soli( lv_json ).
+    REPLACE ALL OCCURRENCES OF '\' IN lv_key_json   WITH '\\'.
+    REPLACE ALL OCCURRENCES OF '\' IN lv_xrefs_json WITH '\\'.
 
+    SET EXTENDED CHECK OFF.
+    DATA(lv_html) =
+      `<!DOCTYPE html>` &&
+      `<html>` &&
+      `` &&
+      `<head>` &&
+      `    <meta charset="UTF-8" />` &&
+      `    <script src="https://cdn.jsdelivr.net/npm/lodash@4/lodash.min.js"></script>` &&
+      `</head>` &&
+      `` &&
+      `<body>` &&
+      `    <p id="message">Processing...</p>` &&
+      `    <script>` &&
+      |        const keyJson = '{ lv_key_json }';| &&
+      |        const xrefJson = '{ lv_xrefs_json }';| &&
+      |        const token = '{ lcl_util=>get_token( ) }';| &&
+      `` &&
+      `        const message = document.getElementById('message');` &&
+      `        let id = '';` &&
+      `` &&
+      `        (async () => {` &&
+      `            if (keyJson) {` &&
+      `                const key = JSON.parse(keyJson);` &&
+      `                const response = await fetch('https://luukpohlmann.nl/apps/xref-api/xrefs');` &&
+      `                const xrefs = await response.json();` &&
+      `                const xref = _.find(xrefs, key);` &&
+      `                if (!xref) {` &&
+      `                    message.textContent = 'Not found';` &&
+      `                    return;` &&
+      `                }` &&
+      `                id = xref.id;` &&
+      `            }` &&
+      `` &&
+      `            if (xrefJson) {` &&
+      `                const suffix = (id) ? ('/' + id) : '';` &&
+      `                response = await fetch('https://luukpohlmann.nl/apps/xref-api/xrefs' + suffix, {` &&
+      `                    method: (id) ? 'PUT' : 'POST',` &&
+      `                    headers: {` &&
+      `                        authorization: 'Bearer ' + token,` &&
+      `                        'content-type': 'application/json',` &&
+      `                        accept: 'application/json'` &&
+      `                    },` &&
+      `                    body: xrefJson` &&
+      `                });` &&
+      `                result = await response.json();` &&
+      `                if (!response.ok) {` &&
+      `                    message.textContent = result.message;` &&
+      `                    return;` &&
+      `                }` &&
+      `                id = result.id;` &&
+      `            }` &&
+      `` &&
+      `            location.href = 'https://luukpohlmann.nl/apps/xref/#/' + id;` &&
+      `        })();` &&
+      `    </script>` &&
+      `</body>` &&
+      `` &&
+      `</html>`.
+    SET EXTENDED CHECK ON.
+
+    cl_abap_browser=>show_html(
+      html_string = lv_html
+      container   = cl_gui_container=>default_screen ).
+
+    "Trigger het scherm
+    WRITE space.
+
+  ENDMETHOD.
+
+ENDCLASS.
+
+*--------------------------------------------------------------------*
+CLASS lcl_task_sync DEFINITION.
+*--------------------------------------------------------------------*
+
+  PUBLIC SECTION.
+    METHODS:
+      on_pbo,
+      on_sapevent FOR EVENT sapevent OF cl_gui_html_viewer
+        IMPORTING postdata,
+      run.
+
+ENDCLASS.
+
+*--------------------------------------------------------------------*
+CLASS lcl_task_sync IMPLEMENTATION.
+*--------------------------------------------------------------------*
+  METHOD on_pbo.
+
+    DATA:
+      lv_url TYPE bds_uri.
+
+    DATA(lo_container) = NEW cl_gui_docking_container( side      = cl_gui_docking_container=>dock_at_bottom
+                                                       extension = 500
+                                                       metric    = cl_gui_control=>metric_pixel ).
+
+    DATA(lo_html_viewer) = NEW cl_gui_html_viewer( parent               = lo_container
+                                                   query_table_disabled = abap_true ).  "voorkomt een overflow bij veel data
+
+    SET EXTENDED CHECK OFF.
     DATA(lv_html) =
       `<!DOCTYPE html>` &&
       `<html>` &&
@@ -1116,128 +1265,169 @@ CLASS lcl_web_view IMPLEMENTATION.
       `<head>` &&
       `    <meta charset="UTF-8" />` &&
       `    <style>` &&
-      `        html {` &&
+      `        html,` &&
+      `        body {` &&
+      `            margin: 0;` &&
+      `            padding: 0;` &&
+      `            width: 100%;` &&
       `            height: 100%;` &&
       `        }` &&
       `` &&
       `        body {` &&
-      `            height: 100%;` &&
-      `            margin: 0;` &&
-      `            font-family: Arial, Helvetica, sans-serif;` &&
-      `            display: grid;` &&
-      `            justify-items: center;` &&
-      `            align-items: center;` &&
-      `            background-color: #3a3a3a;` &&
-      `        }` &&
-      `` &&
-      `        main {` &&
-      `            width: 50%;` &&
-      `            height: 50%;` &&
-      `            display: grid;` &&
-      `            justify-items: center;` &&
-      `            align-items: center;` &&
-      `            background-color: white;` &&
-      `            border-radius: 7px;` &&
-      `            box-shadow: 0px 0px 5px 2px black;` &&
-      `        }` &&
-      `` &&
-      `        #login-form {` &&
-      `            align-self: flex-start;` &&
       `            display: grid;` &&
       `            justify-items: center;` &&
       `            align-items: center;` &&
       `        }` &&
       `` &&
-      `        #login-error {` &&
-      `            color: red;` &&
-      `            opacity: 0;` &&
-      `        }` &&
-      `` &&
-      `        .login-form-field {` &&
-      `            border: none;` &&
-      `            border-bottom: 1px solid #3a3a3a;` &&
-      `            margin-bottom: 10px;` &&
-      `            border-radius: 3px;` &&
-      `            outline: none;` &&
-      `            padding: 0px 0px 5px 5px;` &&
-      `        }` &&
-      `` &&
-      `        #login-form-submit {` &&
-      `            width: 100%;` &&
-      `            padding: 7px;` &&
-      `            border: none;` &&
-      `            border-radius: 5px;` &&
-      `            color: white;` &&
-      `            font-weight: bold;` &&
-      `            background-color: #3a3a3a;` &&
-      `            cursor: pointer;` &&
-      `            outline: none;` &&
+      `        form {` &&
+      `            display: grid;` &&
+      `            justify-items: center;` &&
       `        }` &&
       `    </style>` &&
       `</head>` &&
       `` &&
       `<body>` &&
-      `    <main>` &&
-      `        <h1 id="login-header">Login</h1>` &&
-      `        <form id="login-form">` &&
-      `            <p id="login-error">Invalid credentials</p>` &&
-      `            <input type="email" name="email" class="login-form-field" placeholder="E-mail" required>` &&
-      `            <input type="password" name="password" class="login-form-field" placeholder="Password" required>` &&
-      `            <input type="submit" value="Login" id="login-form-submit">` &&
-      `        </form>` &&
-      `    </main>` &&
+      `    <form` &&
+      `        id="form"` &&
+      `        action="sapevent:sync"` &&
+      `        method=post` &&
+      `    >` &&
+      `        <p id="message">...</p>` &&
+      `        <input` &&
+      `            name="xrefs"` &&
+      `            type="hidden"` &&
+      `        />` &&
+      `        <input` &&
+      `            id="button"` &&
+      `            type="submit"` &&
+      `            value="Synchronize"` &&
+      `            disabled="true"` &&
+      `        >` &&
+      `    </form>` &&
+      `` &&
+      `    <script>` &&
+      |        const system = '{ lcl_util=>get_system( ) }';| &&
+      `        const message = document.getElementById('message');` &&
+      `` &&
+      `        (async () => {` &&
+      `            const response = await fetch('https://luukpohlmann.nl/apps/xref-api/xrefs', {` &&
+      `                headers: {` &&
+      `                    accept: "application/json"` &&
+      `                }` &&
+      `            });` &&
+      `            const result = await response.json();` &&
+      `` &&
+      `            if (!response.ok) {` &&
+      `                message.textContent = result.message;` &&
+      `                return;` &&
+      `            }` &&
+      `` &&
+      `            let xrefs = result.filter(item => item.system == system);` &&
+      `            message.textContent = xrefs.length + ' already analyzed';` &&
+      `            if (xrefs.length) {` &&
+      `                form.xrefs.value = window.btoa(JSON.stringify(xrefs));` &&
+      `                form.button.disabled = false;` &&
+      `            }` &&
+      `        })();` &&
+      `    </script>` &&
       `</body>` &&
       `` &&
-      `<script>` &&
-      `    const loginForm = document.getElementById('login-form');` &&
-      `    const loginError = document.getElementById("login-error");` &&
-      `` &&
-      `    loginForm.onsubmit = async (event) => {` &&
-      `        event.preventDefault();` &&
-      `        loginError.style.opacity = 0;` &&
-      `` &&
-      `        let response = await fetch('https://luukpohlmann.nl/apps/xref-api/login', {` &&
-      `            method: 'POST',` &&
-      `            body: new FormData(loginForm)` &&
-      `        });` &&
-      `        if (!response.ok) {` &&
-      `            loginError.style.opacity = 1;` &&
-      `            return;` &&
-      `        }` &&
-      `` &&
-      `        let result = await response.json();` &&
-      |        const json = '{ lv_json }';| &&
-      `` &&
-      `        response = await fetch('https://luukpohlmann.nl/apps/xref-api/xrefs', {` &&
-      `            method: 'POST',` &&
-      `            headers: {` &&
-      `                authorization: 'Bearer ' + result.token,` &&
-      `                "content-type": "application/json",` &&
-      `                accept: "application/json"` &&
-      `            },` &&
-      `            body: json` &&
-      `        });` &&
-      `` &&
-      `        result = await response.json();` &&
-      `` &&
-      `        if (!response.ok) {` &&
-      `            loginError.textContent = result.message;` &&
-      `            loginError.style.opacity = 1;` &&
-      `            return;` &&
-      `        }` &&
-      `` &&
-      `        location.href = 'https://luukpohlmann.nl/apps/xref/#/' + result.id;` &&
-      `    };` &&
-      `</script>` &&
-      `` &&
       `</html>`.
+    SET EXTENDED CHECK ON.
 
-    cl_abap_browser=>show_html(
-      html_string = lv_html
-      container   = cl_gui_container=>default_screen ).
+    DATA(lt_html) = cl_bcs_convert=>string_to_soli( lv_html ).
+    lo_html_viewer->load_data( IMPORTING assigned_url = lv_url
+                               CHANGING  data_table   = lt_html ).
 
-    "Trigger the default screen
-    WRITE space.
+    lo_html_viewer->set_registered_events( VALUE #( ( eventid = cl_gui_html_viewer=>m_id_sapevent ) ) ).
+    SET HANDLER on_sapevent FOR lo_html_viewer.
+
+    lo_html_viewer->show_url( lv_url ).
+
+  ENDMETHOD.
+
+  METHOD on_sapevent.
+
+    DATA:
+      lt_xrefs TYPE STANDARD TABLE OF ts_xrefs.
+
+    DATA(lv_xrefs_encoded) = substring_after( val = concat_lines_of( postdata ) sub = 'xrefs=' ) ##NO_TEXT.
+    DATA(lv_xrefs_json) = cl_http_utility=>decode_base64( lv_xrefs_encoded ).
+    /ui2/cl_json=>deserialize( EXPORTING json        = lv_xrefs_json
+                                         pretty_name = /ui2/cl_json=>pretty_mode-camel_case
+                               CHANGING  data        = lt_xrefs ).
+
+    lcl_cache=>fill( CORRESPONDING #( lt_xrefs MAPPING created_on = date ) ).
+    MESSAGE s106(sai_cache).
+    LEAVE TO SCREEN 0.
+
+  ENDMETHOD.
+
+  METHOD run.
+
+    DATA(ls_popup) = VALUE swftagstru(
+      LET w = 50
+          h = 5
+          x = floor( '0.5' * ( sy-scols - w ) ) - 2
+          y = floor( '0.5' * ( sy-srows - h ) ) - 2
+      IN  start_col = x
+          start_row = y
+          end_col   = x + w
+          end_row   = y + h ).
+
+    CALL SELECTION-SCREEN 1001
+      STARTING AT ls_popup-start_col ls_popup-start_row
+      ENDING AT   ls_popup-end_col   ls_popup-end_row.
+
+  ENDMETHOD.
+
+ENDCLASS.
+
+*--------------------------------------------------------------------*
+CLASS lcl_main DEFINITION.
+*--------------------------------------------------------------------*
+
+  PUBLIC SECTION.
+    METHODS:
+      run
+        IMPORTING unit                TYPE REF TO lcl_unit
+                  depth_calls         TYPE i
+                  depth_where_used    TYPE i
+                  include_sap_objects TYPE abap_bool
+                  always_reanalyze    TYPE abap_bool.
+
+ENDCLASS.
+
+*--------------------------------------------------------------------*
+CLASS lcl_main IMPLEMENTATION.
+*--------------------------------------------------------------------*
+
+  METHOD run.
+
+    DATA ls_key TYPE zxref_cache.
+
+    IF always_reanalyze = abap_true.
+      ls_key = lcl_cache=>get( unit                = unit->id
+                               depth_calls         = depth_calls
+                               depth_where_used    = depth_where_used
+                               include_sap_objects = include_sap_objects ).
+    ELSE.
+      ls_key = lcl_cache=>find( unit                = unit->id
+                                depth_calls         = depth_calls
+                                depth_where_used    = depth_where_used
+                                include_sap_objects = include_sap_objects ).
+    ENDIF.
+
+    IF ls_key IS INITIAL OR always_reanalyze = abap_true.
+      DATA(ls_xrefs) = NEW lcl_task_analyze( )->run( unit                = unit
+                                                     depth_calls         = depth_calls
+                                                     depth_where_used    = depth_where_used
+                                                     include_sap_objects = include_sap_objects ).
+      lcl_cache=>add( CORRESPONDING #( ls_xrefs ) ).
+    ENDIF.
+
+    NEW lcl_task_show( )->run( key   = ls_key
+                               xrefs = ls_xrefs  ).
 
   ENDMETHOD.
 
@@ -1265,16 +1455,47 @@ SELECTION-SCREEN END OF BLOCK bl2.
 
 SELECTION-SCREEN BEGIN OF BLOCK bl3 WITH FRAME TITLE TEXT-bl3.
 PARAMETERS:
-  pa_sap AS CHECKBOX DEFAULT abap_true,
-  cb_web RADIOBUTTON GROUP a,
-  cb_alv RADIOBUTTON GROUP a.
+  pa_sap  AS CHECKBOX DEFAULT abap_true,
+  pa_rean AS CHECKBOX.
 SELECTION-SCREEN END OF BLOCK bl3.
+
+*--------------------------------------------------------------------*
+SELECTION-SCREEN
+*--------------------------------------------------------------------*
+BEGIN OF SCREEN 1001 TITLE TEXT-sc1 AS WINDOW.
+"HTML viewer wordt dynamisch toegevoegd
+SELECTION-SCREEN END OF SCREEN 1001.
 
 *--------------------------------------------------------------------*
 DATA:
 *--------------------------------------------------------------------*
+  gt_exclude    TYPE syucomm_t,
+  go_task_sync  TYPE REF TO lcl_task_sync,
   go_unit       TYPE REF TO lcl_unit,
   gt_components TYPE name2stringvalue_table.
+
+*--------------------------------------------------------------------*
+INITIALIZATION.
+*--------------------------------------------------------------------*
+  IF lcl_cache=>is_empty( ).
+    go_task_sync = NEW lcl_task_sync( ).
+    go_task_sync->run( ).
+  ENDIF.
+
+*--------------------------------------------------------------------*
+AT SELECTION-SCREEN OUTPUT.
+*--------------------------------------------------------------------*
+  PERFORM set_pf_status IN PROGRAM rsdbrunt.  "Standaard GUI status
+  gt_exclude = COND #( WHEN sy-dynnr <> '1000' THEN VALUE #( ( 'CRET' ) ( 'NONE' ) ( 'SPOS' ) ) ).  "Execute / Check Input / Save as Variant
+  CALL FUNCTION 'RS_SET_SELSCREEN_STATUS'
+    EXPORTING
+      p_status  = sy-pfkey
+    TABLES
+      p_exclude = gt_exclude.
+
+  IF sy-dynnr = '1001'.
+    go_task_sync->on_pbo( ).
+  ENDIF.
 
 *--------------------------------------------------------------------*
 AT SELECTION-SCREEN ON BLOCK bl1.
@@ -1282,7 +1503,7 @@ AT SELECTION-SCREEN ON BLOCK bl1.
   go_unit = lcl_units=>get( name = pa_name
                             comp = pa_comp ).
   IF go_unit IS INITIAL.
-    MESSAGE 'Unit niet gevonden' TYPE 'E'.
+    MESSAGE TEXT-e01 TYPE 'E'.
   ENDIF.
 
   "Lees de naam van de gekozen unit (initieel mag deze wildcards bevatten)
@@ -1310,6 +1531,7 @@ AT SELECTION-SCREEN ON VALUE-REQUEST FOR pa_comp.
     gt_components = COND #( WHEN go_unit->type = 'DEVC'
                       THEN VALUE #( FOR c IN go_unit->get_components( ) ( name = c->id ) )
                       ELSE VALUE #( FOR c IN go_unit->get_components( ) ( name = substring_after( val = c->id  sub = go_unit->id ) ) ) ).
+
     CALL FUNCTION 'F4IF_INT_TABLE_VALUE_REQUEST'
       EXPORTING
         retfield    = 'NAME'
@@ -1326,14 +1548,8 @@ AT SELECTION-SCREEN ON VALUE-REQUEST FOR pa_comp.
 *--------------------------------------------------------------------*
 START-OF-SELECTION.
 *--------------------------------------------------------------------*
-  DATA(gs_result) = NEW lcl_main( )->run( unit                = go_unit
-                                          depth_calls         = pa_dep_c
-                                          depth_where_used    = pa_dep_w
-                                          include_sap_objects = pa_sap ).
-
-  CASE abap_true.
-    WHEN cb_web.
-      NEW lcl_web_view( )->show( gs_result ).
-    WHEN cb_alv.
-      NEW lcl_alv_view( )->show( gs_result ).
-  ENDCASE.
+  NEW lcl_main( )->run( unit                = go_unit
+                        depth_calls         = pa_dep_c
+                        depth_where_used    = pa_dep_w
+                        include_sap_objects = pa_sap
+                        always_reanalyze    = pa_rean ).
