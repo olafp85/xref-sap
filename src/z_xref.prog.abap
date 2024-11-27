@@ -315,24 +315,25 @@ CLASS lcl_unit IMPLEMENTATION.
 
         "Zoek naar lokale klassen
         cl_abap_compiler=>create( get_program( ) )->get_all_refs(
-          EXPORTING p_local  = abap_true
-                    p_types  = VALUE #( sign = 'I' option = 'EQ' ( low = cl_abap_compiler=>tag_method ) )
-                    p_grades = VALUE #( sign = 'I' option = 'EQ' ( low = cl_abap_compiler=>grade_definition ) )
-          IMPORTING p_result = DATA(lt_definitions) ).
-
-        "Negeer lokale testklassen
-        cl_abap_compiler=>create( get_program( ) )->get_all_refs(
-          EXPORTING p_local  = abap_true
+          EXPORTING p_local  = abap_true  "inclusief lokale klassen
                     p_types  = VALUE #( sign = 'I' option = 'EQ' ( low = cl_abap_compiler=>tag_type ) )
                     p_grades = VALUE #( sign = 'I' option = 'EQ' ( low = cl_abap_compiler=>grade_definition ) )
           IMPORTING p_result = DATA(lt_local_classes) ).
-        LOOP AT lt_local_classes INTO DATA(ls_test_class) WHERE mode1 = cl_abap_compiler=>mode1_test.
-          DELETE lt_definitions WHERE full_name CS ls_test_class-full_name.
-        ENDLOOP.
+        DELETE lt_local_classes WHERE full_name NP '\PR:*'.  "Filter op daadwerkelijk lokale klassen
+        DELETE lt_local_classes WHERE mode1 = cl_abap_compiler=>mode1_test.  "Negeer lokale testklassen
 
-        LOOP AT lt_definitions INTO DATA(ls_definition).
-          "Dubbelingen kunnen voorkomen (CL_GUI_ALV_GRID, versie 750) maar worden afgevangen door de hash-tabel
-          INSERT lcl_units=>get_by_full_name( ls_definition-full_name ) INTO TABLE components.
+        "Zoek de bijbehorende lokale methodes
+        cl_abap_compiler=>create( get_program( ) )->get_all_refs(
+          EXPORTING p_local  = abap_true
+                    p_types  = VALUE #( sign = 'I' option = 'EQ' ( low = cl_abap_compiler=>tag_method ) )
+                    p_grades = VALUE #( sign = 'I' option = 'EQ' ( low = cl_abap_compiler=>grade_definition ) )
+          IMPORTING p_result = DATA(lt_local_methods) ).
+
+        LOOP AT lt_local_classes INTO DATA(ls_local_class).
+          LOOP AT lt_local_methods INTO DATA(ls_local_method) WHERE full_name CS ls_local_class-full_name.
+            "Dubbelingen kunnen voorkomen maar worden afgevangen door de hash-tabel
+            INSERT lcl_units=>get_by_full_name( ls_local_method-full_name ) INTO TABLE components.
+          ENDLOOP.
         ENDLOOP.
 
       WHEN 'FUGR'.
@@ -352,7 +353,7 @@ CLASS lcl_unit IMPLEMENTATION.
                                                                    ( low = cl_abap_compiler=>tag_module_out ) )
                     p_grades   = VALUE #( sign = 'I' option = 'EQ' ( low = cl_abap_compiler=>grade_definition ) )
                     p_extended = abap_true  "vult SYMBOL
-          IMPORTING p_result   = lt_definitions ).
+          IMPORTING p_result   = DATA(lt_definitions) ).
         DELETE lt_definitions WHERE mode1 = cl_abap_compiler=>mode1_test.  "Negeer test-methodes
 
         "Verwijder aliassen voor interface-methodes
@@ -1001,7 +1002,7 @@ CLASS lcl_task_analyze IMPLEMENTATION.
           WHILE lo_method IS BOUND.
             DATA(lv_unit) = `\` && segment( val = lo_method->full_name  index = 2  sep = `\` ).
             lo_target = lcl_units=>get_by_full_name( lv_unit )->get_component( substring_after( val = lo_method->full_name  sub = lv_unit ) ).
-            IF lo_target IS BOUND.  "de GET_COMPONENT filter op geïmplementeerde methoden
+            IF lo_target IS BOUND.  "de GET_COMPONENT filtert op geïmplementeerde methodes
               INSERT lo_target->id INTO TABLE lt_aliases.
               EXIT.
             ENDIF.
