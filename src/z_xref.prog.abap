@@ -119,7 +119,7 @@ CLASS lcl_cache IMPLEMENTATION.
        AND depth_where_used    >= @depth_where_used
        AND include_sap_objects IN @lr_include_sap_objects
      ORDER BY depth_calls ASCENDING,
-              depth_calls ASCENDING.
+              depth_where_used ASCENDING.
     ENDSELECT.
 
   ENDMETHOD.
