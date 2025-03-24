@@ -6,6 +6,10 @@ REPORT z_xref.
 * \TY:CLASS\IN:INTERFACE\ME:METHOD
 * \TY:CLASS\TY:CLASS\ME:METHOD
 * \TY:INTERFACE\ME:METHOD
+* \TY:CdsView
+* \TY:CdsFunc
+* \TY:TABL
+* \TY:VIEW
 * \FG:FUGR\FO:FORM
 * \FG:FUGR\MO:PBO
 * \FG:FUGR\MX:PAI
@@ -63,7 +67,7 @@ CLASS lcl_cache DEFINITION.
       add
         IMPORTING key TYPE zxref_cache,
       fill
-        IMPORTING keys TYPE tt_keys,
+        IMPORTING VALUE(keys) TYPE tt_keys,
       find
         IMPORTING unit                TYPE string
                   depth_calls         TYPE i
@@ -76,6 +80,8 @@ CLASS lcl_cache DEFINITION.
                   depth_where_used    TYPE i
                   include_sap_objects TYPE abap_bool
         RETURNING VALUE(key)          TYPE zxref_cache,
+      get_all
+        RETURNING VALUE(keys) TYPE tt_keys,
       is_empty
         RETURNING VALUE(result) TYPE abap_bool.
 
@@ -97,6 +103,19 @@ CLASS lcl_cache IMPLEMENTATION.
 
   METHOD fill.
 
+    DATA(lt_current) = get_all( ).
+
+    IF NOT is_empty( ).
+      "Bewaar de CreatedBy die alleen in SAP bekend is
+      LOOP AT keys ASSIGNING FIELD-SYMBOL(<key>).
+        <key>-created_by = VALUE #( lt_current[ unit                = <key>-unit
+                                                depth_calls         = <key>-depth_calls
+                                                depth_where_used    = <key>-depth_where_used
+                                                include_sap_objects = <key>-include_sap_objects ]-created_by OPTIONAL ).
+      ENDLOOP.
+    ENDIF.
+
+    DELETE FROM zxref_cache.
     INSERT zxref_cache FROM TABLE keys.
     COMMIT WORK.
 
@@ -136,6 +155,14 @@ CLASS lcl_cache IMPLEMENTATION.
 
   ENDMETHOD.
 
+  METHOD get_all.
+
+    SELECT *
+      FROM zxref_cache
+      INTO TABLE @keys.
+
+  ENDMETHOD.
+
   METHOD is_empty.
 
     DATA:
@@ -159,6 +186,165 @@ CLASS lcl_cache IMPLEMENTATION.
 ENDCLASS.
 
 *--------------------------------------------------------------------*
+CLASS lcl_ddls_analyzer DEFINITION
+*--------------------------------------------------------------------*
+  INHERITING FROM cl_qlast_visitor.
+
+  PUBLIC SECTION.
+    METHODS:
+      get_datasources
+        RETURNING VALUE(datasources) TYPE stringtab,
+      visit_association REDEFINITION,
+      visit_selectlist REDEFINITION,
+      visit_table_datasource REDEFINITION.
+
+  PRIVATE SECTION.
+    TYPES:
+      BEGIN OF ts_datasource,
+        line TYPE i,
+        name TYPE string,
+      END OF ts_datasource.
+
+    DATA:
+      mv_line_selectlist TYPE i,
+      mt_datasources     TYPE STANDARD TABLE OF ts_datasource WITH EMPTY KEY.
+
+ENDCLASS.
+
+*--------------------------------------------------------------------*
+CLASS lcl_ddls_analyzer IMPLEMENTATION.
+*--------------------------------------------------------------------*
+
+  METHOD get_datasources.
+
+    datasources = VALUE #( FOR ds IN mt_datasources WHERE ( line < mv_line_selectlist  ) ( ds-name ) ).
+    SORT datasources.
+    DELETE ADJACENT DUPLICATES FROM datasources.
+
+  ENDMETHOD.
+
+  METHOD visit_association.
+
+    DATA(lo_association) = CAST cl_qlast_association( object ).
+    DATA(lv_line) = lo_association->get_token( )-line.
+    DATA(lo_datasource) = lo_association->get_target( ).
+    CHECK lv_line > 0 AND lo_datasource IS BOUND.
+    INSERT VALUE #( line = lv_line  name = lo_datasource->get_name( ) ) INTO TABLE mt_datasources.
+
+  ENDMETHOD.
+
+  METHOD visit_selectlist.
+
+    DATA(lo_selectlist) = CAST cl_qlast_selectlist( object ).
+    me->mv_line_selectlist = lo_selectlist->get_token( )-line.
+
+  ENDMETHOD.
+
+  METHOD visit_table_datasource.
+
+    DATA(lo_datasource) = CAST cl_qlast_table_datasource( object ).
+    DATA(lv_line) = lo_datasource->get_token( )-line.
+    CHECK lv_line > 0.
+    INSERT VALUE #( line = lv_line  name = lo_datasource->get_name( ) ) INTO TABLE mt_datasources.
+
+  ENDMETHOD.
+
+ENDCLASS.
+
+*--------------------------------------------------------------------*
+CLASS lcl_util DEFINITION.
+*--------------------------------------------------------------------*
+
+  PUBLIC SECTION.
+    CLASS-METHODS:
+      get_cds_function_counterpart
+        IMPORTING full_name          TYPE string
+        RETURNING VALUE(counterpart) TYPE string,
+      get_system
+        RETURNING VALUE(system) TYPE string,
+      get_token
+        RETURNING VALUE(token) TYPE string,
+      is_cds_view
+        IMPORTING name          TYPE csequence
+        RETURNING VALUE(result) TYPE abap_bool.
+
+ENDCLASS.
+
+*--------------------------------------------------------------------*
+CLASS lcl_util IMPLEMENTATION.
+*--------------------------------------------------------------------*
+
+  METHOD get_cds_function_counterpart.
+
+    DATA:
+      lv_amdp     TYPE d010dbproc_name,
+      lv_function TYPE d010cdstfunc_name.
+
+    IF full_name CS '\ME'.
+      FIND REGEX `\\TY:(.*)\\ME:(.*)` IN full_name SUBMATCHES DATA(lv_class) DATA(lv_method).
+
+      SELECT cds_tfunc_name
+        FROM d010cdstfuncdep
+       WHERE dbproc_name = @( |{ lv_class }=>{ lv_method }| )
+        INTO @lv_function UP TO 1 ROWS.
+      ENDSELECT.
+
+      IF sy-subrc = 0.
+        counterpart = |\\TY:{ lv_function }|.
+      ENDIF.
+
+    ELSE.
+      SELECT dbproc_name
+        FROM d010cdstfuncdep
+       WHERE cds_tfunc_name = @( substring_after( val = full_name  sub = 'TY:' ) )
+        INTO @lv_amdp UP TO 1 ROWS.
+      ENDSELECT.
+
+      IF sy-subrc = 0.
+        SPLIT lv_amdp AT '=>' INTO lv_class lv_method.
+        counterpart = |\\TY:{ lv_class }\\ME:{ lv_method }|.
+      ENDIF.
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD get_system.
+
+    "Hostnaam inclusief het domein
+    cl_http_server=>get_location( IMPORTING host = DATA(lv_host) ).
+
+    "DEV@company.com
+    system = |{ sy-sysid }@{ substring_after( val = lv_host  sub = '.' ) }|.
+
+  ENDMETHOD.
+
+  METHOD get_token.
+
+    SELECT token UP TO 1 ROWS
+      FROM zxref_auth
+      INTO @token.
+    ENDSELECT.
+
+  ENDMETHOD.
+
+  METHOD is_cds_view.
+
+    DATA:
+      lv_typekind TYPE ddtypekind.
+
+    CALL FUNCTION 'DDIF_TYPEINFO_GET'
+      EXPORTING
+        typename = CONV typename( name )
+      IMPORTING
+        typekind = lv_typekind.
+
+    result = COND #( WHEN lv_typekind = 'STOB' THEN abap_true ).
+
+  ENDMETHOD.
+
+ENDCLASS.
+
+*--------------------------------------------------------------------*
 CLASS lcl_unit DEFINITION
 *--------------------------------------------------------------------*
 * Uitvoerbare unit
@@ -169,7 +355,7 @@ CLASS lcl_unit DEFINITION
   PUBLIC SECTION.
     DATA:
       id        TYPE string READ-ONLY,     "Eigen ID met kleine variaties op FULL_NAME
-      type      TYPE trobjtype READ-ONLY,  "DEVC/CLAS/INTF/FUGR/FUNC/PROG
+      type      TYPE trobjtype READ-ONLY,  "DEVC/CLAS/INTF/FUGR/FUNC/PROG/DDLS/TABL/VIEW
       full_name TYPE string READ-ONLY.     "Volledige naam zoals gebruikt door CL_ABAP_COMPILER
 
     METHODS:
@@ -178,10 +364,13 @@ CLASS lcl_unit DEFINITION
         RETURNING VALUE(component) TYPE REF TO lcl_unit,
       get_components
         RETURNING VALUE(components) TYPE tt_units,
+      get_counterpart
+        RETURNING VALUE(counterpart) TYPE REF TO lcl_unit,
       get_include
         RETURNING VALUE(include) TYPE program,
       get_name
-        RETURNING VALUE(name) TYPE string,
+        IMPORTING case_sensitive TYPE abap_bool DEFAULT abap_false
+        RETURNING VALUE(name)    TYPE string,
       get_package
         RETURNING VALUE(package) TYPE devclass,
       get_program
@@ -191,6 +380,8 @@ CLASS lcl_unit DEFINITION
         RETURNING VALUE(segment) TYPE string,
       get_segments
         RETURNING VALUE(segments) TYPE name2stringvalue_table,
+      is_cds_function
+        RETURNING VALUE(result) TYPE abap_bool,
       is_standard_sap
         RETURNING VALUE(result) TYPE abap_bool.
 
@@ -211,7 +402,7 @@ CLASS lcl_units DEFINITION.
   PUBLIC SECTION.
     CLASS-METHODS:
       get
-        IMPORTING VALUE(type) TYPE trobjtype OPTIONAL  "DEVC/CLAS/INTF/FUNC/FUGR/PROG
+        IMPORTING VALUE(type) TYPE trobjtype OPTIONAL  "DEVC/CLAS/INTF/FUNC/FUGR/PROG/TABL/VIEW/DDLS
                   VALUE(name) TYPE csequence
                   comp        TYPE csequence OPTIONAL  "METH/FORM
         RETURNING VALUE(unit) TYPE REF TO lcl_unit,
@@ -288,7 +479,10 @@ CLASS lcl_unit IMPLEMENTATION.
                                                                ( low = 'INTF' )
                                                                ( low = 'FUNC' )
                                                                ( low = 'FUGR' )
-                                                               ( low = 'PROG' ) ).
+                                                               ( low = 'PROG' )
+                                                               ( low = 'DDLS' )
+                                                               ( low = 'TABL' )
+                                                               ( low = 'VIEW' ) ).
         CALL FUNCTION 'RS_GET_OBJECTS_OF_DEVCLASS'
           EXPORTING
             devclass   = CONV devclass( get_name( ) )
@@ -375,6 +569,15 @@ CLASS lcl_unit IMPLEMENTATION.
 
   ENDMETHOD.
 
+  METHOD get_counterpart.
+
+    DATA(lv_counterpart) = lcl_util=>get_cds_function_counterpart( me->full_name ).
+    IF lv_counterpart IS NOT INITIAL.
+      counterpart = lcl_units=>get_by_full_name( lv_counterpart ).
+    ENDIF.
+
+  ENDMETHOD.
+
   METHOD get_include.
 
     CASE me->type.
@@ -417,8 +620,12 @@ CLASS lcl_unit IMPLEMENTATION.
   METHOD get_name.
 
     name = COND #( WHEN me->type = 'FUNC'
-                   THEN get_segment( 2 )  "functie wordt voorafgegaan door de functiegroep
+                   THEN get_segment( 2 )  "functie wordt voorafgegaan door de functiegroep en methode door klasse
                    ELSE get_segment( 1 ) ).
+
+    IF case_sensitive = abap_false.
+      TRANSLATE name TO UPPER CASE.
+    ENDIF.
 
   ENDMETHOD.
 
@@ -495,6 +702,13 @@ CLASS lcl_unit IMPLEMENTATION.
 
   ENDMETHOD.
 
+  METHOD is_cds_function.
+
+    CHECK 'DDLS|CLAS' CS me->type.
+    result = COND #( WHEN get_counterpart( ) IS NOT INITIAL THEN abap_true ).
+
+  ENDMETHOD.
+
   METHOD is_standard_sap.
 
     DATA(lt_custom_range) = VALUE packrange( sign = 'I' ( option = 'CP' low = '$*' )
@@ -508,9 +722,9 @@ CLASS lcl_unit IMPLEMENTATION.
   METHOD init.
 
     "Klasse/interface indicator meegegeven vanuit de GET-methode?
-    FIND REGEX 'TY([CI]):' IN full_name SUBMATCHES DATA(lv_type_kind).
+    FIND REGEX 'TY([CITVD]):' IN full_name SUBMATCHES DATA(lv_type_kind).
     IF sy-subrc = 0.
-      REPLACE REGEX 'TY([CI]):' IN full_name WITH 'TY:'.
+      REPLACE REGEX 'TY.:' IN full_name WITH 'TY:'.
     ENDIF.
 
     "Vervang in de volledige naam de (eigen) functiegroep notatie door het eigenlijke programma
@@ -525,30 +739,49 @@ CLASS lcl_unit IMPLEMENTATION.
                                    WHEN `\FU` THEN 'FUNC'
                                    WHEN `\FG` THEN 'FUGR'
                                    WHEN `\PR` THEN 'PROG'
-                                   WHEN `\TY` THEN 'CLAS' ).
+                                   WHEN `\TY` THEN SWITCH #( lv_type_kind WHEN 'C' THEN 'CLAS'
+                                                                          WHEN 'I' THEN 'INTF'
+                                                                          WHEN 'T' THEN 'TABL'
+                                                                          WHEN 'V' THEN 'VIEW'
+                                                                          WHEN 'D' THEN 'DDLS' ) ).
+    IF me->type IS INITIAL.
+      FIND REGEX 'TY:([\w/]+)' IN full_name SUBMATCHES DATA(lv_name).  "Inclusief /<namespace>/cl_class...
+      "Soms komen er klassen voorbij die een TYPE_NOT_FOUND exception geven. Voorbeeld is /UIF/CL_LREP_LOAD_HANDLER_UT (die
+      "gebruik maakt van CL_ABAP_COMPILER). Dit blijkt een testklasse te zijn. Misschien deze er nog een keer uitfilteren...
+      TRY.
+          cl_abap_typedescr=>describe_by_name( EXPORTING  p_name         = lv_name
+                                               RECEIVING  p_descr_ref    = DATA(lo_descr)
+                                               EXCEPTIONS type_not_found = 1 ).
+          IF sy-subrc = 0.
+            CASE lo_descr->kind.
+              WHEN cl_abap_typedescr=>kind_class.  me->type = 'CLAS'.
+              WHEN cl_abap_typedescr=>kind_intf.   me->type = 'INTF'.
+              WHEN OTHERS.
+                lo_descr->get_ddic_header( RECEIVING  p_header = DATA(ls_ddic_header)
+                                           EXCEPTIONS OTHERS   = 1 ).
+                IF sy-subrc = 0.
+                  me->type = SWITCH #( lo_descr->get_ddic_header( )-tabtype WHEN if_ddic_adt_ddls_utility=>co_table_type_ddic_table THEN 'TABL'
+                                                                            WHEN if_ddic_adt_ddls_utility=>co_table_type_ddic_view  THEN 'VIEW'
+                                                                            WHEN if_ddic_adt_ddls_utility=>co_table_type_entity OR
+                                                                                 if_ddic_adt_ddls_utility=>co_table_type_table_func THEN 'DDLS' ).
+                ENDIF.
+            ENDCASE.
+          ENDIF.
+
+        CATCH cx_sy_rtti_syntax_error.
+          me->type = '?'.
+      ENDTRY.
+    ENDIF.
 
     CASE me->type.
-      WHEN 'CLAS'.
-        "Interface?
-        IF lv_type_kind IS INITIAL.
-          FIND REGEX 'TY:([\w/]+)' IN full_name SUBMATCHES DATA(lv_type).  "Inclusief /<namespace>/cl_class...
-          "Soms komen er klassen voorbij die een TYPE_NOT_FOUND exception geven. Voorbeeld is /UIF/CL_LREP_LOAD_HANDLER_UT (die
-          "gebruik maakt van CL_ABAP_COMPILER). Dit blijkt een testklasse te zijn. Misschien deze er nog een keer uitfilteren...
-          TRY.
-              CALL METHOD cl_abap_typedescr=>describe_by_name
-                EXPORTING
-                  p_name         = lv_type
-                RECEIVING
-                  p_descr_ref    = DATA(lo_descr)
-                EXCEPTIONS
-                  type_not_found = 1.
-              IF sy-subrc = 0 AND lo_descr->kind = 'I'.
-                me->type = 'INTF'.
-              ENDIF.
+      WHEN 'DDLS'.
+        TRY.
+            "Gebruik in het eigen ID de hoofdlettergevoelige naam
+            DATA(lv_entity_name) = NEW cl_ddic_adt_ddls_utility( )->get_entity_name( CONV #( get_name( ) ) ).
+            REPLACE get_name( ) IN me->id WITH lv_entity_name.
 
-            CATCH cx_sy_rtti_syntax_error  ##NO_HANDLER.
-          ENDTRY.
-        ENDIF.
+          CATCH cx_ddic_adt_ddl_metadata_api  ##NO_HANDLER.
+        ENDTRY.
 
       WHEN 'FUNC'.
         "Voeg de functiegroep als prefix toe
@@ -605,9 +838,16 @@ CLASS lcl_units IMPLEMENTATION.
 
     name = CONV trobj_name( name ).  "csequence » char120
 
+    IF lcl_util=>is_cds_view( name ).
+      "Anders krijg je de niet-relevante keuze tussen CDS design-time object (DDLS) en CDS runtime object (STOB)
+      type = 'DDLS'.
+    ENDIF.
+
     IF type IS INITIAL.
       DATA(ls_object) = cl_wb_quick_search_value_help=>call_value_help( name ).  "Zelfde routine als optie "Other Object..." in de editor
-      type = COND #( WHEN ls_object-wb_type = swbm_c_type_function THEN 'FUNC' ELSE ls_object-object ).
+      type = COND #( WHEN ls_object-wb_type = swbm_c_type_function THEN 'FUNC'
+                     WHEN ls_object-object = 'STOB' THEN 'DDLS'
+                     ELSE ls_object-object ).
       name = ls_object-obj_name.
     ENDIF.
 
@@ -639,9 +879,13 @@ CLASS lcl_units IMPLEMENTATION.
                            WHEN 'DEVC' THEN |\\PA:{ name }|   "Package is een eigen concept (niet bekend bij de compiler)
                            WHEN 'CLAS' THEN |\\TYC:{ name }|  "Geef het reeds bekende type (Class/Interface) door
                            WHEN 'INTF' THEN |\\TYI:{ name }|
+                           WHEN 'TABL' THEN |\\TYT:{ name }|
+                           WHEN 'VIEW' THEN |\\TYV:{ name }|
+                           WHEN 'DDLS' THEN |\\TYD:{ name }|
                            WHEN 'FUNC' THEN |\\FU:{ name }|
                            WHEN 'FUGR' THEN |\\PR:SAPL{ name }|
                            WHEN 'PROG' THEN |\\PR:{ name }| ).
+
     IF lv_full_name IS INITIAL.
       RETURN.
     ENDIF.
@@ -675,6 +919,9 @@ CLASS lcl_units IMPLEMENTATION.
     ENDIF.
 
     CASE lv_object_cls.
+      WHEN 'DF'.
+        lv_full_name = |\\TY:{ ref-object }|.
+
       WHEN 'OM'.
         IF lv_method CS '~'.
           SPLIT lv_method AT '~' INTO DATA(lv_interface) lv_method.
@@ -685,12 +932,13 @@ CLASS lcl_units IMPLEMENTATION.
 
       WHEN 'P'.
         DATA(lv_routine) = find_routine( program = ref-program
-                                         row     = CONV #( ref-object_row ) ).  "numc6 > int
+                                         row     = CONV #( ref-object_row ) ).  "numc6 » int
         "Vervang meteen een include door het hoofdprogramma indien dit eenduidig kan, zo niet dat wordt de oorspronkelijke naam gebruikt
         lv_full_name = |\\PR:{ cl_art_include_services=>derive_mainprog_by_include( ref-program ) }| && lv_routine.
 
         "Functie?
-        IF cl_art_include_services=>include_belongs_to_function( ref-program ).
+        "Behandel lokale form-routines als globale
+        IF cl_art_include_services=>include_belongs_to_function( ref-program ) AND lv_routine IS INITIAL.
           lv_program = ref-program.
           CALL FUNCTION 'FUNCTION_INCLUDE_INFO'
             CHANGING
@@ -711,6 +959,8 @@ CLASS lcl_units IMPLEMENTATION.
 
   METHOD get_by_full_name.
 
+    TRANSLATE full_name TO UPPER CASE.
+
     READ TABLE buffer ASSIGNING FIELD-SYMBOL(<ls_buffer>) WITH TABLE KEY id = full_name.
     IF sy-subrc = 0.
       unit = <ls_buffer>-unit.
@@ -720,8 +970,8 @@ CLASS lcl_units IMPLEMENTATION.
     unit = NEW #( ).
     unit->init( full_name ).
 
-    INSERT VALUE #( id   = full_name
-                    unit = unit ) INTO TABLE buffer.
+    INSERT VALUE #( id = full_name  unit = unit ) INTO TABLE buffer.
+    INSERT VALUE #( id = to_upper( unit->id )  unit = unit ) INTO TABLE buffer.
 
   ENDMETHOD.
 
@@ -778,44 +1028,6 @@ CLASS lcl_units IMPLEMENTATION.
 ENDCLASS.
 
 *--------------------------------------------------------------------*
-CLASS lcl_util DEFINITION.
-*--------------------------------------------------------------------*
-
-  PUBLIC SECTION.
-    CLASS-METHODS:
-      get_system
-        RETURNING VALUE(system) TYPE string,
-      get_token
-        RETURNING VALUE(token) TYPE string.
-
-ENDCLASS.
-
-*--------------------------------------------------------------------*
-CLASS lcl_util IMPLEMENTATION.
-*--------------------------------------------------------------------*
-
-  METHOD get_system.
-
-    "Hostnaam inclusief het domein
-    cl_http_server=>get_location( IMPORTING host = DATA(lv_host) ).
-
-    "DEV@company.com
-    system = |{ sy-sysid }@{ substring_after( val = lv_host  sub = '.' ) }|.
-
-  ENDMETHOD.
-
-  METHOD get_token.
-
-    SELECT token UP TO 1 ROWS
-      FROM zxref_auth
-      INTO @token.
-    ENDSELECT.
-
-  ENDMETHOD.
-
-ENDCLASS.
-
-*--------------------------------------------------------------------*
 CLASS lcl_task_analyze DEFINITION.
 *--------------------------------------------------------------------*
 
@@ -837,7 +1049,18 @@ CLASS lcl_task_analyze DEFINITION.
         IMPORTING unit  TYPE REF TO lcl_unit
                   depth TYPE i
         CHANGING  calls TYPE tt_calls,
+      get_calls_cds
+        IMPORTING unit  TYPE REF TO lcl_unit
+                  depth TYPE i
+        CHANGING  calls TYPE tt_calls,
+      get_processable_units
+        IMPORTING unit         TYPE REF TO lcl_unit
+        RETURNING VALUE(units) TYPE tt_units,
       get_where_used
+        IMPORTING unit  TYPE REF TO lcl_unit
+                  depth TYPE i
+        CHANGING  calls TYPE tt_calls,
+      get_where_used_cds
         IMPORTING unit  TYPE REF TO lcl_unit
                   depth TYPE i
         CHANGING  calls TYPE tt_calls.
@@ -853,7 +1076,7 @@ CLASS lcl_task_analyze IMPLEMENTATION.
     me->include_sap_objects = include_sap_objects.
 
     xrefs = VALUE #( type                = unit->type
-                     name                = unit->get_name( )
+                     name                = unit->get_name( case_sensitive = abap_true )
                      component           = substring_after( val = unit->id  sub = unit->get_name( ) )
                      unit                = unit->id
                      depth_calls         = depth_calls
@@ -863,32 +1086,13 @@ CLASS lcl_task_analyze IMPLEMENTATION.
                      release             = sy-saprl
                      date                = sy-datum ).
 
-    DATA(lt_units) = VALUE tt_units( ( unit ) ).
+    DATA(lt_units) = get_processable_units( unit ).
     DATA(lt_calls) = VALUE tt_calls( ).
-
-    "Alleen hoofdobject opgegeven?
-    IF unit->get_segment( 2 ) IS INITIAL.
-      CASE unit->type.
-        WHEN 'DEVC'.
-          CLEAR lt_units.
-          LOOP AT unit->get_components( ) INTO DATA(lo_component).
-            LOOP AT lo_component->get_components( ) INTO DATA(lo_unit).
-              INSERT lo_unit INTO TABLE lt_units.
-            ENDLOOP.
-          ENDLOOP.
-        WHEN 'PROG'.
-          "Vul aan met lokale routines en klassen
-          INSERT LINES OF unit->get_components( ) INTO TABLE lt_units.
-        WHEN 'CLAS' OR 'INTF' OR 'FUGR'.
-          "Alle aanroepen komen vanuit de componenten
-          lt_units = unit->get_components( ).
-      ENDCASE.
-    ENDIF.
 
     "Aanroepen
     DATA(lv_index) = 0.
     IF depth_calls > 0.
-      LOOP AT lt_units INTO lo_unit.
+      LOOP AT lt_units INTO DATA(lo_unit).
         "Alternatieve voortgangsindicator is CL_RECA_GUI_STATUS_BAR maar deze bestaat niet op CRM
         cl_crm_bsp_cu_progind=>display( iv_act_value = lv_index
                                         iv_max_value = lines( lt_units )
@@ -938,8 +1142,18 @@ CLASS lcl_task_analyze IMPLEMENTATION.
   METHOD get_calls.
 
     DATA:
-      lt_aliases TYPE HASHED TABLE OF string WITH UNIQUE KEY table_line,
-      lt_calls   TYPE tt_calls.
+      lt_aliases   TYPE HASHED TABLE OF string WITH UNIQUE KEY table_line,
+      lt_calls     TYPE tt_calls,
+      lt_calls_cds TYPE tt_calls.
+
+    IF unit->type = 'TABL' OR unit->type = 'VIEW'.
+      RETURN.
+    ELSEIF unit->type = 'DDLS' OR unit->is_cds_function( ).
+      get_calls_cds( EXPORTING unit  = unit
+                               depth = depth
+                     CHANGING  calls = calls ).
+      RETURN.
+    ENDIF.
 
     DATA(lo_compiler) = cl_abap_compiler=>create( p_name    = unit->get_program( )
                                                   p_include = unit->get_include( ) ).
@@ -948,16 +1162,26 @@ CLASS lcl_task_analyze IMPLEMENTATION.
                                          p_types    = VALUE #( sign = 'I' option = 'EQ' ( low = cl_abap_compiler=>tag_method )
                                                                                         ( low = cl_abap_compiler=>tag_function )
                                                                                         ( low = cl_abap_compiler=>tag_program )
-                                                                                        ( low = cl_abap_compiler=>tag_form ) )
+                                                                                        ( low = cl_abap_compiler=>tag_form )
+                                                                                        ( low = cl_abap_compiler=>tag_type ) )  "tbv. CDS 'aanroepen'
                                          p_grades   = VALUE #( sign = 'I' option = 'EQ' ( low = cl_abap_compiler=>grade_direct ) )
                                          p_extended = abap_true  "vult SYMBOL
                                IMPORTING p_result   = DATA(lt_refs) ).
 
+    "Filter de CDS views uit het resultaat, deze vereisen een andere analyze
+    LOOP AT lt_refs INTO DATA(ls_ref) WHERE tag = cl_abap_compiler=>tag_type.
+      DATA(lo_target) = lcl_units=>get_by_full_name( ls_ref-full_name ).
+      IF lo_target->type = 'DDLS'.
+        INSERT VALUE #( source = unit->id  target = lo_target->id ) INTO TABLE lt_calls_cds.
+      ENDIF.
+      DELETE lt_refs.
+    ENDLOOP.
+
     "Bij programma's zijn alleen de submits relevant, andere referenties worden ge-tagged als form-routine
     DELETE lt_refs WHERE tag = cl_abap_compiler=>tag_program AND mode1 <> cl_abap_compiler=>mode1_submit.
 
-    LOOP AT lt_refs INTO DATA(ls_ref).
-      DATA(lo_target) = lcl_units=>get_by_full_name( ls_ref-full_name ).
+    LOOP AT lt_refs INTO ls_ref.
+      lo_target = lcl_units=>get_by_full_name( ls_ref-full_name ).
 
       "Alleen maatwerk?
       IF me->include_sap_objects = abap_false.
@@ -1032,6 +1256,7 @@ CLASS lcl_task_analyze IMPLEMENTATION.
     ENDLOOP.
 
     INSERT LINES OF lt_calls INTO TABLE calls.
+    INSERT LINES OF lt_calls_cds INTO TABLE calls.
 
     IF depth > 1.
       LOOP AT lt_calls INTO DATA(ls_call).
@@ -1040,7 +1265,116 @@ CLASS lcl_task_analyze IMPLEMENTATION.
                              depth = depth - 1
                    CHANGING  calls = calls ).
       ENDLOOP.
+
+      LOOP AT lt_calls_cds INTO ls_call.
+        CHECK NOT line_exists( calls[ source = ls_call-target ] ).
+        get_calls_cds( EXPORTING unit  = lcl_units=>get_by_full_name( ls_call-target )
+                                 depth = depth - 1
+                       CHANGING  calls = calls ).
+      ENDLOOP.
     ENDIF.
+
+  ENDMETHOD.
+
+  METHOD get_calls_cds.
+
+    DATA:
+      lt_calls   TYPE tt_calls,
+      lv_errmsg  TYPE string,
+      lv_errword TYPE string,
+      lv_errline TYPE string,
+      lt_dbpm    TYPE amdp_meth_tab.
+
+    CASE unit->type.
+      WHEN 'CLAS'.
+        "Dit betreft de implementatie van een CDS functie
+        "Zie ook report RSDBCHK_AMDP voor het analyseren van de specifieke AMDP eigenschappen
+        DATA(lv_program) = unit->get_program( ).
+        SYNTAX-CHECK FOR PROGRAM lv_program
+          MESSAGE lv_errmsg WORD lv_errword LINE lv_errline
+          ID 'DBPM' TABLE lt_dbpm.
+
+        DATA(lv_method) = unit->get_segment( 2 ).
+        READ TABLE lt_dbpm ASSIGNING FIELD-SYMBOL(<ls_dbpm>) WITH KEY meth_name = lv_method.
+        IF sy-subrc = 0.
+          LOOP AT <ls_dbpm>-using_tab INTO DATA(ls_table).
+            DATA(lo_target) = lcl_units=>get_by_full_name( '\TY:' && ls_table-obj_name ).
+            INSERT VALUE #( source = unit->id  target = lo_target->id ) INTO TABLE lt_calls.
+          ENDLOOP.
+        ENDIF.
+
+      WHEN 'DDLS'.
+        IF unit->is_cds_function( ).
+          DATA(lo_method) = unit->get_counterpart( ).
+          INSERT VALUE #( source = unit->id  target = lo_method->id ) INTO TABLE lt_calls.
+
+        ELSE.
+          TRY.
+              DATA(lv_source) = NEW cl_ddic_adt_ddls_utility( )->get_ddl_source( CONV #( unit->get_name( ) ) ).
+              DATA(lo_ddls_analyzer) = NEW lcl_ddls_analyzer( ).
+              NEW cl_ddl_parser( )->parse_ddl( lv_source )->accept( lo_ddls_analyzer ).
+              DATA(lt_datasources) = lo_ddls_analyzer->get_datasources( ).
+
+              LOOP AT lt_datasources INTO DATA(lv_datasource).
+                lo_target = lcl_units=>get_by_full_name( '\TY:' && lv_datasource ).
+                INSERT VALUE #( source = unit->id  target = lo_target->id ) INTO TABLE lt_calls.
+              ENDLOOP.
+
+            CATCH cx_dd_ddl_exception
+                  cx_ddl_parser_exception
+                  cx_ddl_visitor_exception.
+              RETURN.
+          ENDTRY.
+        ENDIF.
+    ENDCASE.
+
+    "Alleen maatwerk?
+    IF me->include_sap_objects = abap_false.
+      LOOP AT lt_calls INTO DATA(ls_call).
+        lo_target = lcl_units=>get_by_full_name( ls_call-target ).
+        IF lo_target->is_standard_sap( ).
+          DELETE lt_calls.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+
+    INSERT LINES OF lt_calls INTO TABLE calls.
+
+    IF depth > 1.
+      LOOP AT lt_calls INTO ls_call.
+        CHECK NOT line_exists( calls[ source = ls_call-target ] ).
+        get_calls_cds( EXPORTING unit  = lcl_units=>get_by_full_name( ls_call-target )
+                                 depth = depth - 1
+                       CHANGING  calls = calls ).
+      ENDLOOP.
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD get_processable_units.
+
+    units = VALUE #( ( unit ) ).
+
+    "Alleen hoofdobject opgegeven?
+    CHECK unit->get_segment( 2 ) IS INITIAL.
+
+    CASE unit->type.
+      WHEN 'DEVC'.
+        CLEAR units.
+        LOOP AT unit->get_components( ) INTO DATA(lo_object).
+          LOOP AT get_processable_units( lo_object ) INTO DATA(lo_unit).
+            INSERT lo_unit INTO TABLE units.  "INSERT LINES crashed op duplicaten, single INSERT niet
+          ENDLOOP.
+        ENDLOOP.
+
+      WHEN 'PROG'.
+        "Vul aan met lokale routines en klassen
+        INSERT LINES OF unit->get_components( ) INTO TABLE units.
+
+      WHEN 'CLAS' OR 'INTF' OR 'FUGR'.
+        "Alle aanroepen komen vanuit de componenten
+        units = unit->get_components( ).
+    ENDCASE.
 
   ENDMETHOD.
 
@@ -1052,7 +1386,15 @@ CLASS lcl_task_analyze IMPLEMENTATION.
       lt_dummy TYPE rinfoobj,
       lt_refs  TYPE sci_findlst.
 
-    lt_scope = VALUE #( ( `PROG` ) ( `FUNC` ) ( `METH` ) ).  "Zie tabel EUOBJ
+    IF unit->type = 'DDLS' OR unit->is_cds_function( ).
+      get_where_used_cds( EXPORTING unit  = unit
+                                    depth = depth
+                          CHANGING  calls = calls ).
+      RETURN.
+    ENDIF.
+
+    lt_scope = SWITCH #( unit->type WHEN 'TABL' OR 'VIEW' THEN VALUE #( ( `METH` ) ( `DDLS` ) )
+                                                          ELSE VALUE #( ( `PROG` ) ( `FUNC` ) ( `METH` ) ) ).
 
     CALL FUNCTION 'RS_EU_CROSSREF'
       EXPORTING
@@ -1069,11 +1411,15 @@ CLASS lcl_task_analyze IMPLEMENTATION.
 
     SORT lt_refs.
     DELETE ADJACENT DUPLICATES FROM lt_refs.
-    DELETE lt_refs WHERE grade <> cl_abap_compiler=>grade_direct.  "Alleen aanroepen, geen definities etc.
     DELETE lt_refs WHERE cntnd = abap_true.  "Negeer vervolgregels, alleen de 1e regel van het statement is relevant
+
+    IF NOT ( unit->type = 'TABL' OR unit->type = 'VIEW' ).
+      DELETE lt_refs WHERE grade <> cl_abap_compiler=>grade_direct.  "Alleen aanroepen, geen definities etc.
+    ENDIF.
 
     LOOP AT lt_refs INTO DATA(ls_ref).
       DATA(lo_source) = lcl_units=>get_by_cross_ref( ls_ref ).
+      CHECK lo_source IS BOUND.
 
       "Alleen maatwerk?
       IF me->include_sap_objects = abap_false.
@@ -1083,6 +1429,17 @@ CLASS lcl_task_analyze IMPLEMENTATION.
       "Bij programma's (zonder specifieke routine) zijn alleen de submits relevant
       IF unit->type = 'PROG' AND unit->get_segment( 2 ) IS INITIAL.
         CHECK to_upper( ls_ref-source ) CS 'SUBMIT'.
+      ENDIF.
+
+      "Toon DDIC-objecten alleen in een CDS context
+      IF unit->type = 'TABL' OR unit->type = 'VIEW'.
+        CHECK lo_source->type = 'DDLS' OR
+              lo_source->type = 'CLAS' AND lo_source->is_cds_function( ).
+      ENDIF.
+
+      "De AMDP klasse (maar niet de daadwerkelijke methode) komt naar voren als bron voor een CDS functie, negeer deze
+      IF unit->is_cds_function( ).
+        CHECK lo_source->type = 'CLAS' AND lo_source->is_cds_function( ).
       ENDIF.
 
       "Negeer test-methodes
@@ -1097,8 +1454,7 @@ CLASS lcl_task_analyze IMPLEMENTATION.
         CHECK lcl_units=>get_by_full_name( lv_first )->get_component( substring_after( val = lo_source->id  sub = lv_first ) ) IS BOUND.
       ENDIF.
 
-      INSERT VALUE #( source = lo_source->id
-                      target = unit->id ) INTO TABLE lt_calls.
+      INSERT VALUE #( source = lo_source->id  target = unit->id ) INTO TABLE lt_calls.
     ENDLOOP.
 
     DELETE ADJACENT DUPLICATES FROM lt_calls.  "Meerdere identieke calls zijn mogelijk vanuit dezelfde routine
@@ -1106,6 +1462,148 @@ CLASS lcl_task_analyze IMPLEMENTATION.
 
     IF depth > 1.
       LOOP AT lt_calls INTO DATA(ls_call).
+        CHECK NOT line_exists( calls[ target = ls_call-source ] ).
+        get_where_used( EXPORTING unit  = lcl_units=>get_by_full_name( ls_call-source )
+                                  depth = depth - 1
+                        CHANGING  calls = calls ).
+      ENDLOOP.
+    ENDIF.
+
+  ENDMETHOD.
+
+  METHOD get_where_used_cds.
+
+    DATA:
+      lt_scope            TYPE RANGE OF trobjtype,
+      lt_results          TYPE ris_t_results,
+      lt_results_per_type TYPE ris_t_results,
+      lo_result           TYPE REF TO cl_ris_result,
+      lt_code_lines       TYPE ris_t_code_source_result,
+      lt_calls            TYPE tt_calls,
+      lt_calls_source     TYPE tt_calls,
+      lt_refs             TYPE sci_findlst,
+      lt_uncertain        TYPE tt_units.
+
+    FIELD-SYMBOLS:
+      <lt_results> TYPE ANY TABLE.
+
+    CASE unit->type.
+      WHEN 'CLAS'.
+        DATA(lo_cds_function) = unit->get_counterpart( ).
+        INSERT VALUE #( source = lo_cds_function->id  target = unit->id ) INTO TABLE lt_calls.
+
+      WHEN 'DDLS'.
+        "Wordt deze gebruikt in een andere CDS view? Het RIS hieronder neemt deze (vooralsnog) niet mee
+        SELECT *
+          FROM ddls_ris_index
+         WHERE used_artifact_fullname = @unit->full_name
+          INTO TABLE @DATA(lt_index).
+
+        LOOP AT lt_index INTO DATA(ls_index).
+          DATA(lo_source) = lcl_units=>get( type = 'DDLS'  name = ls_index-ddlsrc_name ).
+
+          "Negeer object die via associaties op veldniveau erbij zijn gekomen (SAP neemt deze ook mee in de index-tabel)
+          "De calls-methode houdt hier rekening mee
+          CLEAR lt_calls_source.
+          get_calls_cds( EXPORTING unit  = lo_source
+                                   depth = 1
+                         CHANGING  calls = lt_calls_source ).
+          CHECK line_exists( lt_calls_source[ target = unit->id ] ).
+          INSERT VALUE #( source = lo_source->id  target = unit->id ) INTO TABLE lt_calls.
+        ENDLOOP.
+
+        TRY.
+            "Gebruik het Repository Information System (RIS) voor de overige typen
+            lt_scope = VALUE #( sign = 'I' option = 'EQ' ( low = 'PROG' ) ( low = 'CLAS' ) ).
+
+            "Zie ook CL_RIS_ADT_RES_REFERENCES->POST voor de aanroep vanuit Eclipse
+            DATA(lo_ris_metadata) = cl_ris_metadata_factory=>get_instance( ).
+            lo_ris_metadata->get_where_used( EXPORTING iv_trobjtype   = 'STOB'
+                                                       iv_legacy_type = 'DO'
+                                             IMPORTING et_where_used  = DATA(lt_object_types) ).
+            DELETE lt_object_types WHERE trobjtype NOT IN lt_scope.
+
+            "Zoeken gebeurt per type object (PROG, CLAS)
+            LOOP AT lt_object_types INTO DATA(ls_object_type).
+              DATA(lo_meta_model) = lo_ris_metadata->get_meta_model( iv_trobjtype   = ls_object_type-trobjtype
+                                                                     iv_legacy_type = ls_object_type-legacy_type ).
+              DATA(lo_data_model) = lo_meta_model->get_data_model( ).
+              CLEAR lt_results_per_type.
+              lo_data_model->execute_where_used( EXPORTING is_parameter_where_used = VALUE #( full_name = unit->full_name )
+                                                 IMPORTING et_results              = lt_results_per_type ).
+              LOOP AT lt_results_per_type INTO lo_result.
+                CHECK lo_result->mo_data IS BOUND.
+                INSERT lo_result INTO TABLE lt_results.
+              ENDLOOP.
+            ENDLOOP.
+
+            "Verwerk het gecombineerde resultaat
+            LOOP AT lt_results INTO lo_result.
+              ASSIGN lo_result->mo_data->* TO <lt_results>.  "ref to data » any table
+
+              LOOP AT <lt_results> ASSIGNING FIELD-SYMBOL(<ls_result>).
+                CLEAR lt_code_lines.
+                lo_data_model->get_code_lines( EXPORTING io_data    = REF #( <ls_result> )
+                                               IMPORTING et_sources = lt_code_lines ).
+
+                lt_refs = VALUE #( FOR ls_code_line   IN lt_code_lines
+                                   FOR ls_line_number IN ls_code_line-line_numbers
+                                   ( VALUE #( BASE CORRESPONDING #( <ls_result> )  object_row = ls_line_number-line_id ) ) ).
+
+                SORT lt_refs.
+                DELETE ADJACENT DUPLICATES FROM lt_refs.
+                DELETE lt_refs WHERE cntnd = abap_true.  "Negeer vervolgregels, alleen de 1e regel van het statement is relevant
+                DELETE lt_refs WHERE grade <> cl_abap_compiler=>grade_direct.  "Alleen aanroepen, geen definities etc.
+
+                LOOP AT lt_refs INTO DATA(ls_ref).
+                  lo_source = lcl_units=>get_by_cross_ref( ls_ref ).
+                  CHECK lo_source IS BOUND.
+
+                  CASE lo_source->type.
+                    WHEN 'FUGR' OR 'CLAS'.
+                      "De aanroep gebeurt altijd vanuit een component
+                      CHECK lo_source->get_segment( 2 ) IS NOT INITIAL.
+                    WHEN 'PROG'.
+                      IF lo_source->get_segment( 2 ) IS INITIAL.
+                        "Het hoofdprogramma komt vaak ten onrechte voor in het resultaat, controleer deze nog
+                        INSERT lo_source INTO TABLE lt_uncertain.
+                        CONTINUE.
+                      ENDIF.
+                  ENDCASE.
+
+                  INSERT VALUE #( source = lo_source->id  target = unit->id ) INTO TABLE lt_calls.
+                ENDLOOP.
+              ENDLOOP.
+            ENDLOOP.
+
+            "Controleer voor de twijfelachtige hoofdprogramma's of er een specifiekere aanroep bestaat
+            DATA(lt_sources) = VALUE stringtab( FOR call IN lt_calls ( call-source ) ).
+            LOOP AT lt_uncertain INTO lo_source.
+              FIND lo_source->id IN TABLE lt_sources.
+              CHECK sy-subrc <> 0.
+              INSERT VALUE #( source = lo_source->id  target = unit->id ) INTO TABLE lt_calls.
+            ENDLOOP.
+
+          CATCH cx_ris_exception INTO DATA(lx_ris_error).
+            MESSAGE lx_ris_error TYPE 'E'.
+        ENDTRY.
+    ENDCASE.
+
+    "Alleen maatwerk?
+    IF me->include_sap_objects = abap_false.
+      LOOP AT lt_calls INTO DATA(ls_call).
+        lo_source = lcl_units=>get_by_full_name( ls_call-source ).
+        IF lo_source->is_standard_sap( ).
+          DELETE lt_calls.
+        ENDIF.
+      ENDLOOP.
+    ENDIF.
+
+    DELETE ADJACENT DUPLICATES FROM lt_calls.  "Meerdere identieke calls zijn mogelijk vanuit dezelfde routine
+    INSERT LINES OF lt_calls INTO TABLE calls.
+
+    IF depth > 1.
+      LOOP AT lt_calls INTO ls_call.
         CHECK NOT line_exists( calls[ target = ls_call-source ] ).
         get_where_used( EXPORTING unit  = lcl_units=>get_by_full_name( ls_call-source )
                                   depth = depth - 1
@@ -1440,6 +1938,11 @@ INCLUDE:
   z_xref_test IF FOUND.  "Unittesten
 
 *--------------------------------------------------------------------*
+TABLES:
+*--------------------------------------------------------------------*
+  sscrfields.
+
+*--------------------------------------------------------------------*
 SELECTION-SCREEN
 *--------------------------------------------------------------------*
 BEGIN OF BLOCK bl1 WITH FRAME TITLE TEXT-bl1.
@@ -1478,8 +1981,15 @@ DATA:
 *--------------------------------------------------------------------*
 INITIALIZATION.
 *--------------------------------------------------------------------*
+  go_task_sync = NEW lcl_task_sync( ).
   IF lcl_cache=>is_empty( ).
-    go_task_sync = NEW lcl_task_sync( ).
+    go_task_sync->run( ).
+  ENDIF.
+
+*--------------------------------------------------------------------*
+AT SELECTION-SCREEN.
+*--------------------------------------------------------------------*
+  IF sscrfields-ucomm = 'SYNC'.
     go_task_sync->run( ).
   ENDIF.
 
