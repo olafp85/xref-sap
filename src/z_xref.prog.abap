@@ -280,7 +280,10 @@ CLASS lcl_util IMPLEMENTATION.
       lv_amdp     TYPE d010dbproc_name,
       lv_function TYPE d010cdstfunc_name.
 
-    IF full_name CS '\ME'.
+    IF full_name CS '\IN'.
+      RETURN.
+
+    ELSEIF full_name CS '\ME'.
       FIND REGEX `\\TY:(.*)\\ME:(.*)` IN full_name SUBMATCHES DATA(lv_class) DATA(lv_method).
 
       SELECT cds_tfunc_name
@@ -739,6 +742,7 @@ CLASS lcl_unit IMPLEMENTATION.
                                    WHEN `\FU` THEN 'FUNC'
                                    WHEN `\FG` THEN 'FUGR'
                                    WHEN `\PR` THEN 'PROG'
+                                   WHEN `\XX` THEN 'SPRX'
                                    WHEN `\TY` THEN SWITCH #( lv_type_kind WHEN 'C' THEN 'CLAS'
                                                                           WHEN 'I' THEN 'INTF'
                                                                           WHEN 'T' THEN 'TABL'
@@ -1391,6 +1395,18 @@ CLASS lcl_task_analyze IMPLEMENTATION.
                                     depth = depth
                           CHANGING  calls = calls ).
       RETURN.
+    ENDIF.
+
+    IF unit->type = 'INTF'.
+      "Proxy object?
+      SELECT SINGLE ifr_name
+        FROM sproxhdr
+       WHERE object   = @unit->type
+         AND obj_name = @( unit->get_name( ) )
+        INTO @DATA(lv_ifr_name).
+      IF sy-subrc = 0.
+        INSERT VALUE #( source = '\XX:' && to_upper( lv_ifr_name )  target = unit->id ) INTO TABLE lt_calls.
+      ENDIF.
     ENDIF.
 
     lt_scope = SWITCH #( unit->type WHEN 'TABL' OR 'VIEW' THEN VALUE #( ( `METH` ) ( `DDLS` ) )
