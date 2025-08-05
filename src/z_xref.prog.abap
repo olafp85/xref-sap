@@ -7,6 +7,7 @@ REPORT z_xref.
 * \TY:CLASS\TY:CLASS\ME:METHOD
 * \TY:INTERFACE\ME:METHOD
 * \TY:CdsView
+* \TY:CdsView\TY:VIEW
 * \TY:CdsFunc
 * \TY:TABL
 * \TY:VIEW
@@ -260,6 +261,12 @@ CLASS lcl_util DEFINITION.
       get_cds_function_counterpart
         IMPORTING full_name          TYPE string
         RETURNING VALUE(counterpart) TYPE string,
+      get_cds_view_counterpart
+        IMPORTING full_name          TYPE string
+        RETURNING VALUE(counterpart) TYPE string,
+      get_sql_view_counterpart
+        IMPORTING full_name          TYPE string
+        RETURNING VALUE(counterpart) TYPE string,
       get_system
         RETURNING VALUE(system) TYPE string,
       get_token
@@ -286,15 +293,11 @@ CLASS lcl_util IMPLEMENTATION.
     ELSEIF full_name CS '\ME'.
       FIND REGEX `\\TY:(.*)\\ME:(.*)` IN full_name SUBMATCHES DATA(lv_class) DATA(lv_method).
 
-      SELECT cds_tfunc_name
+      SELECT concat( '\TY:', cds_tfunc_name )
         FROM d010cdstfuncdep
        WHERE dbproc_name = @( |{ lv_class }=>{ lv_method }| )
-        INTO @lv_function UP TO 1 ROWS.
+        INTO @counterpart UP TO 1 ROWS.
       ENDSELECT.
-
-      IF sy-subrc = 0.
-        counterpart = |\\TY:{ lv_function }|.
-      ENDIF.
 
     ELSE.
       SELECT dbproc_name
@@ -308,6 +311,28 @@ CLASS lcl_util IMPLEMENTATION.
         counterpart = |\\TY:{ lv_class }\\ME:{ lv_method }|.
       ENDIF.
     ENDIF.
+
+  ENDMETHOD.
+
+  METHOD get_cds_view_counterpart.
+
+    SELECT '\TY:' && objectname
+      FROM ddldependency
+     WHERE ddlname    = @( substring_after( val = full_name  sub = 'TY:' ) )
+       AND objecttype = 'VIEW'
+      INTO @counterpart UP TO 1 ROWS.
+    ENDSELECT.
+
+  ENDMETHOD.
+
+  METHOD get_sql_view_counterpart.
+
+    SELECT '\TY:' && ddlname
+      FROM ddldependency
+     WHERE objectname = @( substring_after( val = full_name  sub = 'TY:' ) )
+       AND objecttype = 'VIEW'
+      INTO @counterpart UP TO 1 ROWS.
+    ENDSELECT.
 
   ENDMETHOD.
 
@@ -384,6 +409,8 @@ CLASS lcl_unit DEFINITION
       get_segments
         RETURNING VALUE(segments) TYPE name2stringvalue_table,
       is_cds_function
+        RETURNING VALUE(result) TYPE abap_bool,
+      is_cds_sql_view
         RETURNING VALUE(result) TYPE abap_bool,
       is_standard_sap
         RETURNING VALUE(result) TYPE abap_bool.
@@ -575,6 +602,12 @@ CLASS lcl_unit IMPLEMENTATION.
   METHOD get_counterpart.
 
     DATA(lv_counterpart) = lcl_util=>get_cds_function_counterpart( me->full_name ).
+
+    IF lv_counterpart IS INITIAL.
+      lv_counterpart = SWITCH #( me->type WHEN 'DDLS' THEN lcl_util=>get_cds_view_counterpart( me->full_name )
+                                          WHEN 'VIEW' THEN lcl_util=>get_sql_view_counterpart( me->full_name ) ).
+    ENDIF.
+
     IF lv_counterpart IS NOT INITIAL.
       counterpart = lcl_units=>get_by_full_name( lv_counterpart ).
     ENDIF.
@@ -622,8 +655,8 @@ CLASS lcl_unit IMPLEMENTATION.
 
   METHOD get_name.
 
-    name = COND #( WHEN me->type = 'FUNC'
-                   THEN get_segment( 2 )  "functie wordt voorafgegaan door de functiegroep en methode door klasse
+    name = COND #( WHEN me->type = 'FUNC' OR is_cds_sql_view( )
+                   THEN get_segment( 2 )  "functie wordt voorafgegaan door de functiegroep
                    ELSE get_segment( 1 ) ).
 
     IF case_sensitive = abap_false.
@@ -708,7 +741,14 @@ CLASS lcl_unit IMPLEMENTATION.
   METHOD is_cds_function.
 
     CHECK 'DDLS|CLAS' CS me->type.
-    result = COND #( WHEN get_counterpart( ) IS NOT INITIAL THEN abap_true ).
+    result = xsdbool( lcl_util=>get_cds_function_counterpart( me->full_name ) IS NOT INITIAL ).
+
+  ENDMETHOD.
+
+  METHOD is_cds_sql_view.
+
+    CHECK me->type = 'VIEW'.
+    result =  xsdbool( lcl_util=>get_sql_view_counterpart( me->full_name ) IS NOT INITIAL ).
 
   ENDMETHOD.
 
@@ -724,7 +764,7 @@ CLASS lcl_unit IMPLEMENTATION.
 
   METHOD init.
 
-    "Klasse/interface indicator meegegeven vanuit de GET-methode?
+    "Type indicator meegegeven vanuit de GET-methode?
     FIND REGEX 'TY([CITVD]):' IN full_name SUBMATCHES DATA(lv_type_kind).
     IF sy-subrc = 0.
       REPLACE REGEX 'TY.:' IN full_name WITH 'TY:'.
@@ -810,6 +850,14 @@ CLASS lcl_unit IMPLEMENTATION.
         ELSE.
           "\PR:ZINCL\FO:FORM » \PR:ZPROG\FO:FORM
           me->id = replace( val = me->full_name  sub = |PR:{ get_name( ) }| with = |PR:{ cl_art_include_services=>derive_mainprog_by_include( get_name( ) ) }| ).
+        ENDIF.
+
+      WHEN 'VIEW'.
+        DATA(lv_cds_view) = lcl_util=>get_sql_view_counterpart( me->full_name ).
+        IF lv_cds_view IS NOT INITIAL.
+          "\TY:ZVIEW » \TY:zCdsView\TY:ZVIEW
+          DATA(lo_cds_view) = lcl_units=>get_by_full_name( lv_cds_view ).
+          me->id = lo_cds_view->id && me->id.
         ENDIF.
 
     ENDCASE.
@@ -1061,13 +1109,15 @@ CLASS lcl_task_analyze DEFINITION.
         IMPORTING unit         TYPE REF TO lcl_unit
         RETURNING VALUE(units) TYPE tt_units,
       get_where_used
-        IMPORTING unit  TYPE REF TO lcl_unit
-                  depth TYPE i
-        CHANGING  calls TYPE tt_calls,
+        IMPORTING unit   TYPE REF TO lcl_unit
+                  depth  TYPE i
+                  expand TYPE abap_bool DEFAULT abap_true
+        CHANGING  calls  TYPE tt_calls,
       get_where_used_cds
-        IMPORTING unit  TYPE REF TO lcl_unit
-                  depth TYPE i
-        CHANGING  calls TYPE tt_calls.
+        IMPORTING unit   TYPE REF TO lcl_unit
+                  depth  TYPE i
+                  expand TYPE abap_bool DEFAULT abap_true
+        CHANGING  calls  TYPE tt_calls.
 
 ENDCLASS.
 
@@ -1150,12 +1200,12 @@ CLASS lcl_task_analyze IMPLEMENTATION.
       lt_calls     TYPE tt_calls,
       lt_calls_cds TYPE tt_calls.
 
-    IF unit->type = 'TABL' OR unit->type = 'VIEW'.
-      RETURN.
-    ELSEIF unit->type = 'DDLS' OR unit->is_cds_function( ).
+    IF unit->type = 'DDLS' OR unit->is_cds_function( ) OR unit->is_cds_sql_view( ).
       get_calls_cds( EXPORTING unit  = unit
                                depth = depth
                      CHANGING  calls = calls ).
+      RETURN.
+    ELSEIF unit->type = 'TABL' OR unit->type = 'VIEW'.
       RETURN.
     ENDIF.
 
@@ -1174,9 +1224,11 @@ CLASS lcl_task_analyze IMPLEMENTATION.
 
     "Filter de CDS views uit het resultaat, deze vereisen een andere analyze
     LOOP AT lt_refs INTO DATA(ls_ref) WHERE tag = cl_abap_compiler=>tag_type.
-      DATA(lo_target) = lcl_units=>get_by_full_name( ls_ref-full_name ).
-      IF lo_target->type = 'DDLS'.
-        INSERT VALUE #( source = unit->id  target = lo_target->id ) INTO TABLE lt_calls_cds.
+      IF ls_ref-full_name CP '\TY*' AND count( val = ls_ref-full_name  sub = '\' ) = 1.
+        DATA(lo_target) = lcl_units=>get_by_full_name( ls_ref-full_name ).
+        IF lo_target->type = 'DDLS' OR lo_target->is_cds_sql_view( ).
+          INSERT VALUE #( source = unit->id  target = lo_target->id ) INTO TABLE lt_calls_cds.
+        ENDIF.
       ENDIF.
       DELETE lt_refs.
     ENDLOOP.
@@ -1307,14 +1359,17 @@ CLASS lcl_task_analyze IMPLEMENTATION.
           ENDLOOP.
         ENDIF.
 
-      WHEN 'DDLS'.
+      WHEN 'DDLS' OR 'VIEW'.
         IF unit->is_cds_function( ).
           DATA(lo_method) = unit->get_counterpart( ).
           INSERT VALUE #( source = unit->id  target = lo_method->id ) INTO TABLE lt_calls.
 
         ELSE.
           TRY.
-              DATA(lv_source) = NEW cl_ddic_adt_ddls_utility( )->get_ddl_source( CONV #( unit->get_name( ) ) ).
+              DATA(lv_name) = COND ddlname( WHEN unit->is_cds_sql_view( )
+                                            THEN unit->get_counterpart( )->get_name( )
+                                            ELSE unit->get_name( ) ).
+              DATA(lv_source) = NEW cl_ddic_adt_ddls_utility( )->get_ddl_source( lv_name ).
               DATA(lo_ddls_analyzer) = NEW lcl_ddls_analyzer( ).
               NEW cl_ddl_parser( )->parse_ddl( lv_source )->accept( lo_ddls_analyzer ).
               DATA(lt_datasources) = lo_ddls_analyzer->get_datasources( ).
@@ -1330,6 +1385,7 @@ CLASS lcl_task_analyze IMPLEMENTATION.
               RETURN.
           ENDTRY.
         ENDIF.
+
     ENDCASE.
 
     "Alleen maatwerk?
@@ -1449,7 +1505,8 @@ CLASS lcl_task_analyze IMPLEMENTATION.
 
       "Toon DDIC-objecten alleen in een CDS context
       IF unit->type = 'TABL' OR unit->type = 'VIEW'.
-        CHECK lo_source->type = 'DDLS' OR
+        CHECK unit->is_cds_sql_view( ) OR
+              lo_source->type = 'DDLS' OR
               lo_source->type = 'CLAS' AND lo_source->is_cds_function( ).
       ENDIF.
 
@@ -1483,6 +1540,14 @@ CLASS lcl_task_analyze IMPLEMENTATION.
                                   depth = depth - 1
                         CHANGING  calls = calls ).
       ENDLOOP.
+    ENDIF.
+
+    "Zoek voor SQL views óók op de bijbehorende CDS views
+    IF unit->is_cds_sql_view( ) AND expand = abap_true.
+      get_where_used( EXPORTING unit   = unit->get_counterpart( )
+                                depth  = depth
+                                expand = abap_false
+                      CHANGING  calls  = calls ).
     ENDIF.
 
   ENDMETHOD.
@@ -1625,6 +1690,14 @@ CLASS lcl_task_analyze IMPLEMENTATION.
                                   depth = depth - 1
                         CHANGING  calls = calls ).
       ENDLOOP.
+    ENDIF.
+
+    "Zoek voor CDS views óók op de onderliggende SQL views
+    IF unit->type = 'DDLS' AND NOT unit->is_cds_function( ) AND expand = abap_true.
+      get_where_used( EXPORTING unit   = unit->get_counterpart( )
+                                depth  = depth
+                                expand = abap_false
+                      CHANGING  calls  = calls ).
     ENDIF.
 
   ENDMETHOD.
