@@ -284,8 +284,7 @@ CLASS lcl_util IMPLEMENTATION.
   METHOD get_cds_function_counterpart.
 
     DATA:
-      lv_amdp     TYPE d010dbproc_name,
-      lv_function TYPE d010cdstfunc_name.
+      lv_amdp TYPE d010dbproc_name.
 
     IF full_name CS '\IN'.
       RETURN.
@@ -804,10 +803,10 @@ CLASS lcl_unit IMPLEMENTATION.
                 lo_descr->get_ddic_header( RECEIVING  p_header = DATA(ls_ddic_header)
                                            EXCEPTIONS OTHERS   = 1 ).
                 IF sy-subrc = 0.
-                  me->type = SWITCH #( lo_descr->get_ddic_header( )-tabtype WHEN if_ddic_adt_ddls_utility=>co_table_type_ddic_table THEN 'TABL'
-                                                                            WHEN if_ddic_adt_ddls_utility=>co_table_type_ddic_view  THEN 'VIEW'
-                                                                            WHEN if_ddic_adt_ddls_utility=>co_table_type_entity OR
-                                                                                 if_ddic_adt_ddls_utility=>co_table_type_table_func THEN 'DDLS' ).
+                  me->type = SWITCH #( ls_ddic_header-tabtype WHEN if_ddic_adt_ddls_utility=>co_table_type_ddic_table THEN 'TABL'
+                                                              WHEN if_ddic_adt_ddls_utility=>co_table_type_ddic_view  THEN 'VIEW'
+                                                              WHEN if_ddic_adt_ddls_utility=>co_table_type_entity OR
+                                                                   if_ddic_adt_ddls_utility=>co_table_type_table_func THEN 'DDLS' ).
                 ENDIF.
             ENDCASE.
           ENDIF.
@@ -822,7 +821,11 @@ CLASS lcl_unit IMPLEMENTATION.
         TRY.
             "Gebruik in het eigen ID de hoofdlettergevoelige naam
             DATA(lv_entity_name) = NEW cl_ddic_adt_ddls_utility( )->get_entity_name( CONV #( get_name( ) ) ).
-            REPLACE get_name( ) IN me->id WITH lv_entity_name.
+            IF lv_entity_name IS NOT INITIAL.
+              "ZI_Equipments lijkt een inconsistentie te bevatten want is binnen de CDS view gedefinieerd als ZI_Equipments_C1
+              "en geeft daardoor geen EntityName terug
+              REPLACE get_name( ) IN me->id WITH lv_entity_name.
+            ENDIF.
 
           CATCH cx_ddic_adt_ddl_metadata_api  ##NO_HANDLER.
         ENDTRY.
@@ -1415,7 +1418,7 @@ CLASS lcl_task_analyze IMPLEMENTATION.
 
     units = VALUE #( ( unit ) ).
 
-    "Alleen hoofdobject opgegeven?
+    "Alleen hoofdobject opgegeven? Vul dan de lijst aan
     CHECK unit->get_segment( 2 ) IS INITIAL.
 
     CASE unit->type.
@@ -1423,7 +1426,7 @@ CLASS lcl_task_analyze IMPLEMENTATION.
         CLEAR units.
         LOOP AT unit->get_components( ) INTO DATA(lo_object).
           LOOP AT get_processable_units( lo_object ) INTO DATA(lo_unit).
-            INSERT lo_unit INTO TABLE units.  "INSERT LINES crashed op duplicaten, single INSERT niet
+            INSERT lo_unit INTO TABLE units.  "INSERT LINES crasht op duplicaten, single INSERT niet
           ENDLOOP.
         ENDLOOP.
 
@@ -1459,6 +1462,7 @@ CLASS lcl_task_analyze IMPLEMENTATION.
         FROM sproxhdr
        WHERE object   = @unit->type
          AND obj_name = @( unit->get_name( ) )
+         AND inactive = @abap_false
         INTO @DATA(lv_ifr_name).
       IF sy-subrc = 0.
         INSERT VALUE #( source = '\XX:' && to_upper( lv_ifr_name )  target = unit->id ) INTO TABLE lt_calls.
