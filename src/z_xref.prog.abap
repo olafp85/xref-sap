@@ -803,10 +803,11 @@ CLASS lcl_unit IMPLEMENTATION.
                 lo_descr->get_ddic_header( RECEIVING  p_header = DATA(ls_ddic_header)
                                            EXCEPTIONS OTHERS   = 1 ).
                 IF sy-subrc = 0.
-                  me->type = SWITCH #( ls_ddic_header-tabtype WHEN if_ddic_adt_ddls_utility=>co_table_type_ddic_table THEN 'TABL'
-                                                              WHEN if_ddic_adt_ddls_utility=>co_table_type_ddic_view  THEN 'VIEW'
-                                                              WHEN if_ddic_adt_ddls_utility=>co_table_type_entity OR
-                                                                   if_ddic_adt_ddls_utility=>co_table_type_table_func THEN 'DDLS' ).
+                  me->type = SWITCH #( ls_ddic_header-tabtype WHEN cl_qlast_constants=>tabtype_transparent    THEN 'TABL'
+                                                              WHEN cl_qlast_constants=>tabtype_view           THEN 'VIEW'
+                                                              WHEN cl_qlast_constants=>tabtype_entity
+                                                                OR 'W' "constant cl_qlast_constants=>tabtype_view_entity is available from S/4
+                                                                OR cl_qlast_constants=>tabtype_table_function THEN 'DDLS' ).
                 ENDIF.
             ENDCASE.
           ENDIF.
