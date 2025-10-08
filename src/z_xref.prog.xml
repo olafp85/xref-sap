@@ -90,36 +90,24 @@
        <ID>I</ID>
        <KEY>BL1</KEY>
        <ENTRY>Unit</ENTRY>
-       <LENGTH>14</LENGTH>
+       <LENGTH>70</LENGTH>
       </item>
       <item>
        <ID>I</ID>
        <KEY>BL2</KEY>
        <ENTRY>Recursie diepte</ENTRY>
-       <LENGTH>24</LENGTH>
+       <LENGTH>70</LENGTH>
       </item>
       <item>
        <ID>I</ID>
        <KEY>BL3</KEY>
        <ENTRY>Overig</ENTRY>
-       <LENGTH>16</LENGTH>
+       <LENGTH>70</LENGTH>
       </item>
       <item>
        <ID>R</ID>
        <ENTRY>Cross referenties</ENTRY>
        <LENGTH>70</LENGTH>
-      </item>
-      <item>
-       <ID>S</ID>
-       <KEY>CB_ALV</KEY>
-       <ENTRY>Toon resultaat in ALV</ENTRY>
-       <LENGTH>38</LENGTH>
-      </item>
-      <item>
-       <ID>S</ID>
-       <KEY>CB_WEB</KEY>
-       <ENTRY>Toon resultaat in web app</ENTRY>
-       <LENGTH>38</LENGTH>
       </item>
       <item>
        <ID>S</ID>
@@ -143,6 +131,12 @@
        <ID>S</ID>
        <KEY>PA_NAME</KEY>
        <ENTRY>Naam</ENTRY>
+       <LENGTH>38</LENGTH>
+      </item>
+      <item>
+       <ID>S</ID>
+       <KEY>PA_REAN</KEY>
+       <ENTRY>Altijd opnieuw analyseren</ENTRY>
        <LENGTH>38</LENGTH>
       </item>
       <item>
